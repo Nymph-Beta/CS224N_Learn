@@ -1,0 +1,40 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Conda
+.conda/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Cursor
+.specstory/
+.cursor/
+
+# 个人学习记录（不上传）
+a1/README.md
+a2/README.md
+a3/README.md
+a4/README.md
+a5/README.md
+
+# 大型模型文件（gensim 下载的词向量等）
+*.bin
+*.gz
+*.model
+
+# 系统文件
+Thumbs.db
