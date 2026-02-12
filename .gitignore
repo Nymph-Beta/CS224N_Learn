@@ -31,10 +31,15 @@ a3/README.md
 a4/README.md
 a5/README.md
 
+# 训练结果（模型权重等）
+**/results/
+**/data/
+
 # 大型模型文件（gensim 下载的词向量等）
 *.bin
 *.gz
 *.model
+
 
 # 系统文件
 Thumbs.db
