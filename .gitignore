@@ -35,6 +35,13 @@ a5/README.md
 **/results/
 **/data/
 
+# a3 大型数据/词表文件
+a3/student/zh_en_data/
+a3/student/src.vocab
+a3/student/tgt.vocab
+a3/student/vocab.json
+a3/student/sanity_check_en_es_data/
+
 # 大型模型文件（gensim 下载的词向量等）
 *.bin
 *.gz
