@@ -12,9 +12,12 @@ Moussa Doumbouya <moussa@stanford.edu>
 """
 
 from collections import namedtuple
+# from math import e
 import sys
 from typing import List, Tuple, Dict, Set, Union
+from scipy.stats import alpha
 import torch
+# from torch._dynamo.utils import same
 import torch.nn as nn
 import torch.nn.utils
 import torch.nn.functional as F
@@ -35,6 +38,7 @@ class NMT(nn.Module):
     def __init__(self, embed_size, hidden_size, vocab, dropout_rate=0.2):
         """ Init NMT Model.
 
+        初始化 NMT 模型
         @param embed_size (int): Embedding size (dimensionality)
         @param hidden_size (int): Hidden Size, the size of hidden states (dimensionality)
         @param vocab (Vocab): Vocabulary object containing src and tgt languages
@@ -42,23 +46,38 @@ class NMT(nn.Module):
         @param dropout_rate (float): Dropout probability, for attention
         """
         super(NMT, self).__init__()
+        # 初始化模型嵌入层
         self.model_embeddings = ModelEmbeddings(embed_size, vocab)
+        # 隐藏层大小
         self.hidden_size = hidden_size
+        # 丢弃率
         self.dropout_rate = dropout_rate
+        # 词汇表
         self.vocab = vocab
 
         # default values
+        # 后嵌入 CNN 层
         self.post_embed_cnn = None
+        # 编码器
         self.encoder = None
+        # 解码器
         self.decoder = None
+        # 隐藏层投影层
         self.h_projection = None
+        # 细胞状态投影层
         self.c_projection = None
+        # 注意力投影层
         self.att_projection = None
+        # 组合输出投影层
         self.combined_output_projection = None
+        # 目标词汇表投影层
         self.target_vocab_projection = None
+        # 丢弃层
         self.dropout = None
         # For sanity check only, not relevant to implementation
+        # 用于 sanity check 的标志
         self.gen_sanity_check = False
+        # 计数器
         self.counter = 0
 
         ### YOUR CODE HERE (~9 Lines)
@@ -86,6 +105,28 @@ class NMT(nn.Module):
         ###     Dropout Layer:
         ###         https://pytorch.org/docs/stable/generated/torch.nn.Dropout.html
 
+        # 初始化后嵌入 CNN 层
+        e = embed_size
+        h = hidden_size
+        V_t = len(vocab.tgt)
+        # 初始化后嵌入 CNN 层
+        self.post_embed_cnn = nn.Conv1d(in_channels=e, out_channels=e, kernel_size=2, padding='same')
+        # 初始化编码器
+        self.encoder = nn.LSTM(input_size=e, hidden_size=h, bidirectional=True, bias=True)
+        # 初始化解码器  input_size = e + h 是因为每步输入是目标嵌入和上一步combined-output的拼接
+        self.decoder = nn.LSTMCell(input_size=e+h, hidden_size=h, bias=True)
+        # 初始化隐藏层投影层
+        self.h_projection = nn.Linear(in_features=2*h, out_features=h, bias=False)
+        # 初始化细胞状态投影层
+        self.c_projection = nn.Linear(in_features=2*h, out_features=h, bias=False)
+        # 初始化注意力投影层
+        self.att_projection = nn.Linear(in_features=2*h, out_features=h, bias=False)
+        # 初始化组合输出投影层 3h是因为输入u_t是a_t和h_t的拼接, a_t是h*2, h_t是h
+        self.combined_output_projection = nn.Linear(in_features=3*h, out_features=h, bias=False)
+        # 初始化目标词汇表投影层
+        self.target_vocab_projection = nn.Linear(in_features=h, out_features=V_t, bias=False)
+        # 初始化丢弃层
+        self.dropout = nn.Dropout(dropout_rate)
 
 
         ### END YOUR CODE
@@ -133,6 +174,7 @@ class NMT(nn.Module):
         torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """ Apply the encoder to source sentences to obtain encoder hidden states.
             Additionally, take the final states of the encoder and project them to obtain initial states for decoder.
+            将编码器应用于源语言句子，输出是编码器隐藏状态和初始状态
 
         @param source_padded (Tensor): Tensor of padded source sentences with shape (src_len, b), where
                                         b = batch_size, src_len = maximum source sentence length. Note that
@@ -143,7 +185,10 @@ class NMT(nn.Module):
         @returns dec_init_state (tuple(Tensor, Tensor)): Tuple of tensors representing the decoder's initial
                                                 hidden state and cell.
         """
-        enc_hiddens, dec_init_state = None, None
+        # 编码器隐藏状态
+        enc_hiddens = None
+        # 解码器初始状态
+        dec_init_state = None
 
         ### YOUR CODE HERE (~ 11 Lines)
         ### TODO:
@@ -180,9 +225,33 @@ class NMT(nn.Module):
         ###     Tensor Permute:
         ###         https://pytorch.org/docs/stable/generated/torch.permute.html
 
+        # 构造源语言句子张量x, shape (src_len, b, e)
+        X = self.model_embeddings.source(source_padded)
 
+        # 将x的形状从 (src_len, b, e) 变为 Conv1d 期望输入形状 (batch, channels, length)，即 (b, e, src_len)
+        X = X.permute(1, 2, 0)
 
+        # 应用后嵌入 CNN 层
+        X = self.post_embed_cnn(X)
 
+        # 将x的形状从 (b, e, src_len) 变为 (src_len, b, e)
+        X = X.permute(2, 0, 1)
+
+        # 应用编码器
+        packed_X = pack_padded_sequence(X, source_lengths, batch_first= False)
+        enc_hiddens, (last_hidden, last_cell) = self.encoder(packed_X)
+        # batch_first=True 使得 pad_packed_sequence 的输出直接就是 (b, src_len, h*2)。
+        enc_hiddens = pad_packed_sequence(enc_hiddens, batch_first= True)[0]
+        # 将enc_hiddens的形状从 (src_len, b, h*2) 变为 (b, src_len, h*2)
+        # enc_hiddens = enc_hiddens.permute(1, 0, 2)
+
+        # 计算解码器初始状态
+        # 将双向编码器的最终隐状态和细胞状态拼接后投影，作为解码器的初始状态
+        init_decoder_hidden = torch.cat([last_hidden[0], last_hidden[1]], dim=1)
+        init_decoder_hidden = self.h_projection(init_decoder_hidden)
+        init_decoder_cell = torch.cat([last_cell[0], last_cell[1]], dim=1)
+        init_decoder_cell = self.c_projection(init_decoder_cell)
+        dec_init_state = (init_decoder_hidden, init_decoder_cell)
 
         ### END YOUR CODE
 
@@ -204,16 +273,20 @@ class NMT(nn.Module):
                                         tgt_len = maximum target sentence length, b = batch_size,  h = hidden size
         """
         # Chop off the <END> token for max length sentences.
+        # 去掉目标语言句子中的 <END> 标记，因为它是目标语言句子的结束标记，不需要作为输入
         target_padded = target_padded[:-1]
 
         # Initialize the decoder state (hidden and cell)
+        # 初始化解码器状态
         dec_state = dec_init_state
 
         # Initialize previous combined output vector o_{t-1} as zero
+        # 初始化前一步的组合输出向量 o_{t-1} 为零
         batch_size = enc_hiddens.size(0)
         o_prev = torch.zeros(batch_size, self.hidden_size, device=self.device)
 
         # Initialize a list we will use to collect the combined output o_t on each step
+        # 初始化一个列表，用于收集每个时间步的组合输出 o_t
         combined_outputs = []
 
         ### YOUR CODE HERE (~9 Lines)
@@ -252,9 +325,32 @@ class NMT(nn.Module):
         ###     Tensor Stacking:
         ###         https://pytorch.org/docs/stable/generated/torch.stack.html
 
+        # 应用注意力投影层 将编码器隐藏状态投影到注意力空间 (b, src_len, 2h) 变成 (b, src_len, h)
+        enc_hiddens_proj = self.att_projection(enc_hiddens)
 
+        # 构造目标语言句子张量y, shape (tgt_len, b, e)
+        # target_padded 形状 (tgt_len-1, b) → Y 形状 (tgt_len-1, b, e)
+        Y = self.model_embeddings.target(target_padded)
 
+        # 使用 torch.split 将 Y 沿着时间维度拆分成 tgt_len-1 个张量，每个张量形状 (1, b, e)
+        Y_t = torch.split(Y, 1, dim=0)
+        # 将 Y_t 中的每个张量 squeeze 掉维度 0，得到形状 (b, e) 的张量
+        Y_t = [y.squeeze(0) for y in Y_t]
 
+        # 遍历 Y_t，构造 Ybar_t
+        # Ybar_t 形状 (b, e + h)
+        for y_t in Y_t:
+            # 将 y_t 和 o_prev 拼接，得到形状 (b, e + h) 的张量
+            Ybar_t = torch.cat([y_t, o_prev], dim=-1)
+            # 应用解码器 step 函数，得到新的解码器状态 (dec_hidden, dec_cell) 形状 (b, h) 和新的组合输出 o_t 形状 (b, h)    
+            dec_state, o_t, _ = self.step(Ybar_t, dec_state, enc_hiddens, enc_hiddens_proj, enc_masks)
+            # 将 o_t 添加到 combined_outputs 列表中
+            combined_outputs.append(o_t)
+            # 更新 o_prev 为新的 o_t 形状 (b, h)
+            o_prev = o_t
+
+        # 将 combined_outputs 列表转换为形状 (tgt_len, b, h) 的张量
+        combined_outputs = torch.stack(combined_outputs)
 
 
         ### END YOUR CODE
@@ -288,6 +384,7 @@ class NMT(nn.Module):
                                       your implementation.
         """
 
+        # 初始化组合输出
         combined_output = None
 
         ### YOUR CODE HERE (~3 Lines)
@@ -313,10 +410,18 @@ class NMT(nn.Module):
         ###     Tensor Squeeze:
         ###         https://pytorch.org/docs/stable/generated/torch.squeeze.html
 
+        # 应用解码器 step 函数，得到新的解码器状态 (dec_hidden, dec_cell) 形状 (b, h) 和新的组合输出 o_t 形状 (b, h)
+        dec_state = self.decoder(Ybar_t, dec_state)
+        dec_hidden, dec_cell = dec_state
+
+        # 计算注意力得分 e_t 形状 (b, src_len)
+        # 结果形状：(b, src_len, h) @ (b, h, 1) → (b, src_len, 1) → squeeze → (b, src_len)
+        e_t = torch.bmm(enc_hiddens_proj, dec_hidden.unsqueeze(2)).squeeze(2)
 
         ### END YOUR CODE
 
         # Set e_t to -inf where enc_masks has 1
+        # 如果 enc_masks 不为 None，则将 e_t 中对应位置的值设为 -inf
         if enc_masks is not None:
             e_t.data.masked_fill_(enc_masks.bool(), -float('inf'))
 
@@ -347,6 +452,23 @@ class NMT(nn.Module):
         ###     Tanh:
         ###         https://pytorch.org/docs/stable/generated/torch.tanh.html
 
+        # 应用 softmax 函数，得到注意力权重 alpha_t 形状 (b, src_len)
+        alpha_t = F.softmax(e_t, dim=1)
+
+        # 结果形状：(b, src_len, h) @ (b, src_len, 2h) → (b, 1, 2h) → squeeze → (b, 2h)
+        a_t = torch.bmm(alpha_t.unsqueeze(1), enc_hiddens).squeeze(1)
+
+        # 拼接u_t, 形状 (b, 3h)
+        u_t = torch.cat([a_t, dec_hidden], dim=1)
+
+        # 投影v_t, 形状 (b, h)
+        v_t = self.combined_output_projection(u_t)
+
+        # 应用 Tanh 函数，得到 O_t 形状 (b, h)
+        O_t = torch.tanh(v_t)
+
+        # 应用丢弃层，得到 combined_output 形状 (b, h)
+        O_t = self.dropout(O_t)
 
         ### END YOUR CODE
 
@@ -471,7 +593,8 @@ class NMT(nn.Module):
         """ Load the model from a file.
         @param model_path (str): path to model
         """
-        params = torch.load(model_path, map_location=lambda storage, loc: storage)
+        # params = torch.load(model_path, map_location=lambda storage, loc: storage)
+        params = torch.load(model_path, map_location=lambda storage, loc: storage, weights_only=False)
         args = params['args']
         model = NMT(vocab=params['vocab'], **args)
         model.load_state_dict(params['state_dict'])
