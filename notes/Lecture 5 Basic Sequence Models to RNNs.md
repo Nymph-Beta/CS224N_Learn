@@ -48,3 +48,262 @@
         |--------------------------------------------|
                         (过路费 W3 - 直连)
     ```
+    ---
+### RNN
+
+#### 1. 前向传播
+
+RNN 的精髓在于**“循环”**和**“参数共享”**。在每一个时间步（time-step）$t$，网络不仅接收当前的输入词，还接收上一个时间步传过来的**隐藏状态（Hidden State）** 。
+
+##### 1. 隐藏状态的更新 (Hidden State Update) 与 输出预测 (Output Prediction)
+
+在时间步 $t$，隐藏层 $h_t$ 的计算公式如下 ：
+
+$$h_{t} = \sigma(W^{(hh)}h_{t-1} + W^{(hx)}x_{t})$$
+
+- **$x_t$**：当前时间步 $t$ 的输入词向量 。
+- **$h_{t-1}$**：上一个时间步传过来的隐藏状态，它浓缩了从第 1 步到第 $t-1$ 步的所有上下文信息 。
+- **$W^{(hx)}$**：将输入词向量映射到隐藏层的权重矩阵 。
+- **$W^{(hh)}$**：将上一步的隐藏状态映射到当前隐藏层的权重矩阵 。
+- **$\sigma$**：非线性激活函数（在标准 RNN 中通常是 Sigmoid 或 Tanh） 。
+
+**💡 参数共享**：注意，公式里的 $W^{(hh)}$ 和 $W^{(hx)}$ **没有下角标 $t$**。这意味着，无论句子有多长，在第 1 步还是第 100 步，RNN 使用的都是**同一套权重矩阵** 。这使得模型的参数量完全独立于输入序列的长度，彻底击碎了维度灾难 。
+
+基于当前的隐藏状态 $h_t$，预测下一个词 $\hat{y}_t$ ：
+
+$$\hat{y}_{t} = softmax(W^{(S)}h_{t})$$
+
+- **$W^{(S)}$**：从隐藏层到输出词表的权重矩阵 。
+- **$\hat{y}_{t}$**：一个概率分布向量，表示在给定前面的上下文后，词表中每个词作为下一个词的概率 。
+
+---
+
+##### 2. 损失函数与困惑度 (Loss and Perplexity)
+
+既然每一步 $t$ 都在做预测，那么每一步都会产生误差。
+
+- **单步交叉熵损失 (Cross-entropy at step $t$)** ：
+
+  $$J^{(t)}(\theta) = -\sum_{j=1}^{|V|} y_{t,j} \times \log(\hat{y}_{t,j})$$
+
+  （这里 $y_t$ 是真实的 One-hot 标签，所以实际上等于 $-\log(\text{目标词的预测概率})$）。
+
+- **整个语料库的平均损失 (Total Loss over Corpus $T$)** ：
+
+  $$J = \frac{1}{T}\sum_{t=1}^{T} J^{(t)}(\theta) = -\frac{1}{T}\sum_{t=1}^{T}\sum_{j=1}^{|V|} y_{t,j} \times \log(\hat{y}_{t,j})$$
+
+- **困惑度 (Perplexity)** ： 在自然语言处理中，我们常用困惑度来评估语言模型，它是交叉熵损失的指数形式：
+
+  $$\text{Perplexity} = 2^J$$
+
+  困惑度越低，说明模型对预测下一个词越准确 。
+
+---
+
+#### 2. 反向传播
+
+RNN 的反向传播被称为 **BPTT (Backpropagation Through Time)**。它之所以复杂，是因为误差不仅要向下层传，还要向**历史时间步**传。
+
+**输出层误差 (起点)**
+
+在每个时间步 $t$，输出层的误差起点为：
+
+$$\delta^{(out)}_t \triangleq \frac{\partial J^{(t)}}{\partial z^{(out)}_t} = \hat{y}_t - y_t$$
+
+** 隐层误差递推（RNN 的核心与难点）**
+
+在通用流程中，隐层误差是 $\delta^{(k-1)} = (W^{(k)})^\top \delta^{(k)} \circ f'(z^{(k-1)})$。
+
+在 RNN 的时间步 $t$，隐层节点 $h_t$ 的误差来源有**两个方向**：
+
+- **方向一（向上）**：来自当前时刻的输出层误差 $\delta^{(out)}_t$。
+- **方向二（向右）**：来自**下一时刻** $t+1$ 传回来的隐层误差 $\delta^{(h)}_{t+1}$。
+
+根据链式法则公式，RNN 隐层 $z^{(h)}_t$ 的总误差 $\delta^{(h)}_t$ 递推公式为：
+
+$$\delta^{(h)}_t = \underbrace{\left( (W^{(S)})^\top \delta^{(out)}_t + (W^{(hh)})^\top \delta^{(h)}_{t+1} \right)}_{\text{两个方向的误差加权回传}} \circ \underbrace{\sigma'(z^{(h)}_t)}_{\text{激活函数导数}}$$
+
+> **💡 讲义中的梯度消失证明与此息息相关：** 讲义公式 12 写道：$\frac{\partial h_t}{\partial h_k} = \prod_{j=k+1}^{t} W^T \times \text{diag}[f'(h_{j-1})]$ 。 这本质上就是你的公式里 **$(W^{(hh)})^\top \dots \circ f'(z)$** 这一项在时间步上被**连续乘了 $t-k$ 次**。由于激活函数 $f'$ 的值通常小于 1，且权重 $W$ 的范数域域也可能小于 1，连续相乘导致结果呈指数级衰减 $(\beta_W\beta_h)^{t-k}$ 。这就是**梯度消失 (Vanishing Gradient)**。
+
+**参数梯度计算** 由于 RNN 在所有时间步上**共享**相同的权重矩阵 $W^{(hh)}$, $W^{(hx)}$ 和 $W^{(S)}$ ，所以计算总梯度时，需要把**每个时间步算出的梯度加起来**（对应讲义公式 10：$\frac{\partial E}{\partial W} = \sum_{t=1}^T \frac{\partial E_t}{\partial W}$ ）。
+
+- 套用公式 $\nabla_W = \delta a^\top$：
+  - 输出层权重：$\nabla_{W^{(S)}} = \sum_t \delta^{(out)}_t (h_t)^\top$
+  - 隐层自循环权重：$\nabla_{W^{(hh)}} = \sum_t \delta^{(h)}_t (h_{t-1})^\top$
+  - 输入层权重：$\nabla_{W^{(hx)}} = \sum_t \delta^{(h)}_t (x_t)^\top$
+
+**参数更新**
+
+利用梯度下降进行更新（记得加入防止梯度爆炸的 Gradient Clipping）：
+
+- $W^{(hh)} \leftarrow W^{(hh)} - \eta \cdot \nabla_{W^{(hh)}}$
+- $W^{(hx)} \leftarrow W^{(hx)} - \eta \cdot \nabla_{W^{(hx)}}$
+- $W^{(S)} \leftarrow W^{(S)} - \eta \cdot \nabla_{W^{(S)}}$
+
+---
+
+#### 3. 梯度爆炸 与 梯度消失
+
+在 RNN 中，面对的不再是简单的层与层之间的传递，而是**时间步（Time-step）**上的反向传播，这被称为 **BPTT (Backpropagation Through Time)**。
+
+*1. **总体梯度参数的计算***
+
+在通用流程中，权重的梯度是 $\nabla_W = \delta a^\top$。
+
+但在 RNN 中，由于权重矩阵 $W$（具体是指隐层循环权重 $W^{(hh)}$）在所有时间步 $t \in [1, T]$ 都是**共享的** 。因此，根据多元微积分，总误差对 $W$ 的梯度，必须是**每个时间步产生的误差对 $W$ 梯度的总和** ：
+
+$$\frac{\partial E}{\partial W} = \sum_{t=1}^{T} \frac{\partial E_t}{\partial W}$$
+
+(注：讲义中用 $E$ 表示损失函数 Loss，相当于之前通用流程中的 $J$ )
+
+*2. **单步误差***
+
+现在聚焦于某一个特定的时间步 $t$（比如在句子末尾，模型发现自己预测错了），看看它的误差 $E_t$ 是如何影响权重 $W$ 的。
+
+根据通用流程，在时间步 $t$，误差是从输出层产生的起点：$\delta^{(out)}_t = \hat{y}_t - y_t$。 然后，这个误差要传给隐层 $h_t$。讲义中使用链式法则表示了这一过程 ：
+
+$$\frac{\partial E_t}{\partial W} = \sum_{k=1}^{t} \underbrace{\frac{\partial E_t}{\partial y_t} \frac{\partial y_t}{\partial h_t}}_{\text{在 } t \text{ 时刻的隐层误差起点}} \cdot \underbrace{\frac{\partial h_t}{\partial h_k}}_{\text{误差从 } t \text{ 传回历史时刻 } k} \cdot \underbrace{\frac{\partial h_k}{\partial W}}_{\text{在时刻 } k \text{ 计算局部梯度}}$$
+
+这里最核心、也是导致问题的关键，就是中间那一项：**$\frac{\partial h_t}{\partial h_k}$** 。 它代表了**时间步 $t$ 的隐层状态，对过去某个时间步 $k$ 的隐层状态的依赖程度** 
+
+***3. 连乘（时间步展开与误差嵌套）***
+
+把 $\frac{\partial h_t}{\partial h_k}$ 映射到通用流程中。
+
+在通用流程里，隐层误差递推的公式是：
+
+$\delta^{(k-1)} = (W^{(k)})^\top \delta^{(k)} \circ f'(z^{(k-1)})$
+
+如果想把误差从时间步 $t$ 传回到时间步 $k$，必须把这个递推公式连续使用 $t-k$ 次。讲义中公式 12 就是这个连续递推过程的严格数学表达 ：
+
+$$\frac{\partial h_t}{\partial h_k} = \prod_{j=k+1}^{t} \frac{\partial h_j}{\partial h_{j-1}} = \prod_{j=k+1}^{t} W^T \times \text{diag}[f'(h_{j-1})]$$
+
+- 公式里的 $W^T$ 就是通用流程里的 $(W^{(hh)})^\top$。
+- 公式里的 $\text{diag}[f'(h_{j-1})]$ 就是通用流程里的逐元素相乘 $\circ f'(z)$，写成对角矩阵是为了方便矩阵乘法（**数学等价性：$\text{diag}(v) \times x \iff v \circ x$**）。
+- 这意味着，反向传播的信号在经过每一个时间步时，都要乘以同一个权重矩阵 $W^T$ 和激活函数的导数 $f'$。
+
+**【单步偏导与总误差 $\delta$ 的关系】**
+
+- **局部转换系数**：公式 $\frac{\partial h_j}{\partial h_{j-1}}$ 仅仅计算了相邻两步之间的“局部转换系数”（雅可比矩阵）。
+
+- **链式法则拼合**：完整的反向传播必须承接来自未来的总积累误差 $\delta$。代入链式法则后，单步的完整递推过程为：
+
+  $$\delta^{(j-1)} = \delta^{(j)} \times \underbrace{\frac{\partial h_j}{\partial h_{j-1}}}_{\text{局部转换系数}}$$
+
+- **嵌套与消失的本质**：当误差从时刻 $t$ 传回历史时刻 $k$ 时，单步递推被“套娃式”嵌套了 $t-k$ 次，完整展开为：
+
+  $$\delta_k = \delta_t \times \underbrace{\left( \prod_{j=k+1}^{t} W^T \times \text{diag}[f'(h_{j-1})] \right)}_{\text{几十次局部系数的连乘}}$$
+
+  **致命弱点**：由于 RNN 在所有时间步**共享同一个**权重矩阵 $W$，如果 $W$ 的范数与 $f'$ 的乘积小于 1，那么这个“连乘项”在经过数十次相乘后会呈指数级急剧缩小。最终导致传回历史的误差 $\delta_k \approx 0$，模型从而丧失了学习长距离依赖的能力（即梯度消失）。
+
+***4. 范数界限与指数崩塌*（梯度消失与爆炸）**
+
+为了分析这个长长的连乘 $\prod$ 到底有多大，讲义引入了矩阵的范数（可以理解为矩阵的“绝对值”或“大小”）。
+
+对于单步的误差传递矩阵，它的范数有一个上限 ：
+
+$$\left|\left| \frac{\partial h_j}{\partial h_{j-1}} \right|\right| \le ||W^T|| [cite_start]\cdot ||\text{diag}[f'(h_{j-1})]||\le \beta_W \beta_h$$
+
+- $\beta_W$ 是权重矩阵 $W$ 范数的最大值 。
+- $\beta_h$ 是激活函数导数 $f'$ 的最大值（如果是 Sigmoid，最大导数只有 0.25；如果是 Tanh，最大导数是 1）。
+
+那经过 $t-k$ 步的长途跋涉后，总误差传递矩阵的范数上限就是指数形式的 ：
+
+$$\left|\left| \frac{\partial h_t}{\partial h_k} \right|\right| = \left|\left| \prod_{j=k+1}^{t} \frac{\partial h_j}{\partial h_{j-1}} \right|\right| [cite_start]\le (\beta_W \beta_h)^{t-k}$$
+
+**$(\beta_W \beta_h)$ 这个底数决定了 消失和爆炸**
+
+1. **梯度消失 (Vanishing Gradient)**：如果 $\beta_W \beta_h < 1$（这在实际中使用 Sigmoid/Tanh 和随机初始化时几乎是必然的），当时间差 $(t-k)$ 很大时，这个指数项会**迅速衰减为 0** 。
+   - **物理意义**：当前时刻 $t$ 产生的误差 $\delta_t$，根本无法传回给很久以前的时刻 $k$ 。这就解释了为什么讲义中提到，对于长句子（如 “Jane walked into the room... Jane said hi to ___”），RNN 无法正确预测出 "John"，因为前面关于 "John" 的记忆在梯度反传时被“吃掉”了，模型失去了长程依赖能力 。
+2. **梯度爆炸 (Exploding Gradient)**：如果 $\beta_W \beta_h > 1$，随着步数累加，这个项会呈**指数级爆炸** 。
+   - **物理意义**：通用流程中的参数更新步 $\theta \leftarrow \theta - \eta \nabla_\theta$ 会失控 。步伐太大，导致参数跑到了一个极其糟糕的配置空间，甚至在程序中出现 `Inf` 或 `NaN` 报错，导致训练崩溃 。
+
+---
+
+#### 4.  解决梯度爆炸与消失 (Solution to the Exploding & Vanishing Gradients)
+
+既然我们通过推导知道了“连乘项”是罪魁祸首，那么解决方案自然也是围绕如何控制这个连乘项展开的。
+
+##### 1. 解决梯度爆炸：梯度裁剪 (Gradient Clipping)
+
+梯度爆炸时，参数更新的步伐 $\eta \nabla_\theta$ 会变得极其巨大，导致模型直接跳出合理的参数空间（甚至报错 NaN）。
+
+讲义给出的标准解法是**梯度裁剪**。
+
+**核心逻辑**：如果梯度的长度（范数 $||g||$）超过了某个预设的阈值（threshold），我们就强行把它缩放回阈值大小。
+
+**数学公式**：
+
+假设当前计算出的梯度向量为 $\hat{g}$，如果 $||\hat{g}|| \ge threshold$，则执行：
+
+$$\hat{g} \leftarrow \frac{threshold}{||\hat{g}||} \hat{g}$$
+
+- **物理直觉**：这就像是你在下山（梯度下降）时，突然遇到一个几乎垂直的悬崖（梯度爆炸）。如果你按原计划迈步，会直接摔死。梯度裁剪相当于告诉你：“保持你下山的方向不变，但强行把这一步的步幅缩短到安全距离。”
+
+##### 2. 解决梯度消失：初始化与激活函数
+
+梯度消失是因为连乘项 $(\beta_W \beta_h)^{t-k}$ 趋近于 0。为了不让它变小，我们可以从 $\beta_W$（权重矩阵）和 $\beta_h$（激活函数导数）入手。
+
+- **策略 A：将隐层权重矩阵 $W^{(hh)}$ 初始化为单位矩阵 (Identity Matrix Initialization)**
+
+  如果 $W^{(hh)} = I$，那么在初始训练阶段，连乘 $W^T \times W^T \dots$ 相当于 $I \times I \dots = I$。这样矩阵乘法就不会造成误差的缩放。
+
+- **策略 B：使用 ReLU 激活函数**
+
+  我们之前提到 Sigmoid/Tanh 的最大导数只有 0.25 和 1。而 ReLU 的公式是 $f(z) = \max(0, z)$。
+
+  **关键点**：当 $z > 0$ 时，ReLU 的导数 $f'(z) \equiv 1$。
+
+  这意味着，只要神经元被激活，误差传过 ReLU 时就不会发生任何衰减（乘以 1），这极大地缓解了链式法则中因为导数小于 1 带来的连乘衰减效应。
+
+------
+
+#### 5. 深度双向 RNN (Deep Bidirectional RNNs)
+
+在解决完数学上的梯度问题后，2.5 节转向了**架构上的升级**。标准的 RNN 有两个明显的局限性：它只能看“过去”，而且它不够“深”。
+
+##### 1. 为什么需要双向？(Bidirectional RNNs)
+
+标准的 RNN 是单向的，从左往右读句子。但人类理解语言时，往往需要看**后面**的词才能确定前面词的意思。
+
+- **例子**：“He went to the **bank** to deposit his money.” vs “He went to the **bank** of the river.”
+
+  如果只看前面的 "He went to the"，RNN 是无法判断 "bank" 到底是银行还是河岸的。
+
+**架构解法：双向 RNN (Bi-RNN)**
+
+它的思想极其暴力且有效：用两个独立的 RNN，一个正着读，一个反着读，然后把它们的结果拼起来！
+
+- **前向 RNN (Forward RNN)**：从 $x_1$ 读到 $x_t$，计算隐状态 $\overrightarrow{h}_t$。
+
+- **后向 RNN (Backward RNN)**：从 $x_T$ 反向读到 $x_t$，计算隐状态 $\overleftarrow{h}_t$。
+
+- **合并隐状态 (Concatenation)**：在时间步 $t$，最终的隐状态是两者的拼接：
+
+  $$h_t = [\overrightarrow{h}_t ; \overleftarrow{h}_t]$$
+
+- **输出预测**：最终的预测 $\hat{y}_t$ 是基于这个包含“过去”和“未来”双重上下文的拼接向量得出的。
+
+##### 2. 为什么需要深度？(Deep/Multi-layer RNNs)
+
+在早期的 RNN 中，隐层只有一层（横向在时间上展开，但纵向上很浅）。深度学习的经验告诉我们，**层数越深，模型提取抽象特征的能力越强**。
+
+**架构解法：深度 RNN (Deep RNNs)**
+
+就像搭积木一样，把多个 RNN 垂直堆叠起来。
+
+- 第一层 RNN 接收原始的词向量 $x_t$ 作为输入，输出第一层隐状态 $h^{(1)}_t$。
+
+- 第二层 RNN **不再接收词向量**，而是把第一层输出的 $h^{(1)}_t$ 作为自己的“输入”，输出第二层隐状态 $h^{(2)}_t$。
+
+- **通用公式**（对于第 $l$ 层）：
+
+  $$h^{(l)}_t = f(W^{(l)} h^{(l)}_{t-1} + U^{(l)} h^{(l-1)}_t + b^{(l)})$$
+
+  *(注意：这里 $h^{(l-1)}_t$ 扮演了平时输入 $x_t$ 的角色)*。
+
+**工业界的经验**：在 NLP 任务（如机器翻译）中，多层 RNN 的表现远好于单层。通常堆叠 2 到 4 层是比较常见的做法（再深就需要引入残差连接等其他技巧了，否则横向纵向的梯度都会消失）。
+
+------
+
+### 
