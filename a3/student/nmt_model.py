@@ -105,15 +105,14 @@ class NMT(nn.Module):
         ###     Dropout Layer:
         ###         https://pytorch.org/docs/stable/generated/torch.nn.Dropout.html
 
-        # 初始化后嵌入 CNN 层
         e = embed_size
         h = hidden_size
         V_t = len(vocab.tgt)
         # 初始化后嵌入 CNN 层
         self.post_embed_cnn = nn.Conv1d(in_channels=e, out_channels=e, kernel_size=2, padding='same')
-        # 初始化编码器
+        # 初始化编码器  bidirectional=True 意味着 LSTM 同时从正向和反向处理输入序列
         self.encoder = nn.LSTM(input_size=e, hidden_size=h, bidirectional=True, bias=True)
-        # 初始化解码器  input_size = e + h 是因为每步输入是目标嵌入和上一步combined-output的拼接
+        # 初始化解码器  input_size = e + h 是因为每步输入是目标嵌入和上一步combined-output的拼接  hidden_size=h 是隐藏层大小
         self.decoder = nn.LSTMCell(input_size=e+h, hidden_size=h, bias=True)
         # 初始化隐藏层投影层
         self.h_projection = nn.Linear(in_features=2*h, out_features=h, bias=False)
@@ -239,6 +238,7 @@ class NMT(nn.Module):
 
         # 应用编码器
         packed_X = pack_padded_sequence(X, source_lengths, batch_first= False)
+        # 应用编码器  packed_X 是 PackedSequence 对象，包含输入序列和长度信息
         enc_hiddens, (last_hidden, last_cell) = self.encoder(packed_X)
         # batch_first=True 使得 pad_packed_sequence 的输出直接就是 (b, src_len, h*2)。
         enc_hiddens = pad_packed_sequence(enc_hiddens, batch_first= True)[0]
@@ -249,8 +249,12 @@ class NMT(nn.Module):
         # 将双向编码器的最终隐状态和细胞状态拼接后投影，作为解码器的初始状态
         init_decoder_hidden = torch.cat([last_hidden[0], last_hidden[1]], dim=1)
         init_decoder_hidden = self.h_projection(init_decoder_hidden)
+
+        # 将双向编码器的最终细胞状态拼接后投影，作为解码器的初始细胞状态
         init_decoder_cell = torch.cat([last_cell[0], last_cell[1]], dim=1)
         init_decoder_cell = self.c_projection(init_decoder_cell)
+
+        # 将解码器的初始状态和细胞状态打包成一个元组
         dec_init_state = (init_decoder_hidden, init_decoder_cell)
 
         ### END YOUR CODE

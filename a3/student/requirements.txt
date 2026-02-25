@@ -6,6 +6,6 @@ nltk
 torchvision
 torch
 sentencepiece
-lxml==5.0.0
+lxml>=5.0.0
 sacrebleu
 tensorboard
