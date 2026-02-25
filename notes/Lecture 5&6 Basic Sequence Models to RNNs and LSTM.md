@@ -410,3 +410,103 @@ $$h_t = o_t \circ \tanh(c_t)$$
 
 - **计算方式**：输出门 ot 同样由 Sigmoid 函数生成 0∼1 的向量。最终的隐藏状态 ht 则是将更新后的长期记忆 ct 经过 tanh 压回 −1∼1 区间后，与输出门进行逐元素相乘。
 - **物理意义**：长期记忆 ct 包含了大量历史信息，但并非所有信息都需要用于预测当前时刻的单词。输出门 ot 作为过滤器，评估并决定了长期记忆中的哪些部分应该被“暴露”出来，从而成为当前时刻对外的隐藏状态 ht。在 LSTM 中，隐藏状态参与了所有门的计算，这正是输出门存在的意义。
+
+
+
+---
+
+### Alternative Solutions to Vanishing Gradients
+
+Is vanishing/exploding gradient just an RNN problem? 答案是否定的。
+
+梯度消失和爆炸并非 RNN 独有。任何神经网络，包括前馈神经网络（Feed-forward NN）和卷积神经网络（CNN），只要网络层数足够深，都会面临这个问题 。
+
+-  在反向传播过程中，根据链式法则，梯度需要逐层相乘 。如果我们选择的非线性激活函数（比如 Sigmoid 或 Tanh）其导数最大值小于 1，那么经过多层相乘后，梯度信号会呈指数级衰减，变得极小（Vanishingly small）
+- 因为误差信号在传到靠近输入层的“底层（Lower layers）”时已经非常微弱，导致这些底层的权重几乎无法更新 。底层学不到有效特征，整个深层网络就很难训练 。
+
+既然一层层传递会导致信号衰减，现代深度学习架构采用了一种非常直接的解决方案：**增加直连连接（Direct connections）** 。这相当于在网络中让梯度可以直接流过去，而不用经过每一层的非线性变换消耗 。
+
+1. **ResNet**（残差网络）
+
+   这是最著名的跨层连接方式，通常被称为残差连接（Residual connections）或跳跃连接（Skip-connections）。
+
+   - 公式 $\mathcal{F}(x)+x$ ，$x$ 就是直接跨越了权重层传过来的恒等连接（Identity connection） 。即使权重层（$\mathcal{F}(x)$）把梯度降为 0，这根直连的线依然能原封不动地把之前的信息和梯度传导过去，默认保留了原始信息 
+   - 正因为有了这根“保底”的跨层连线，我们可以把 CNN 或 FNN 堆叠到几十层甚至上百层，而不用担心梯度消失，极大地降低了深层网络的训练难度 。
+
+2. **DenseNet**（密集连接网络）
+
+   ResNet 只是跨越一两层，而 DenseNet 做得更极致。它直接将前面每一层的输出，都连到后面所有层作为输入 。这种“全连接”式的跨层通道，让特征复用达到了最大化，梯度可以极其顺畅地从顶层直接流向任意底层。
+
+3. **HighwayNet**（高速公路网络）
+
+   - 它和 ResNet 的加法结构类似，但它引入了**动态门（Dynamic gate）**的概念 。它不是简单地把 $x$ 和 $\mathcal{F}(x)$ 相加，而是通过一个可学习的门控机制，来动态决定“当前这层应该保留多少原始输入 $x$”以及“应该吸收多少经过变换的新特征” 。
+   - 这个门控思想实际上是受到了 LSTM（例如其输入门、遗忘门）的启发，只不过 HighwayNet 是将这种 RNN 中的门控机制，跨界应用到了深层的前馈网络和卷积网络中 。
+
+虽然刚才说到所有深度网络都有梯度问题，但 **RNN 依然是最不稳定、最容易遭遇梯度灾难的架构** 。原因在于，CNN 或 FNN 每一层的权重矩阵（$W_1, W_2, W_3...$）都是不同的；而 RNN 在时间维度上展开时，**在每一个时间步乘以的都是完完全全相同的同一个权重矩阵** 。同一个数字（如果小于 1）被连续重复相乘几十次，衰减速度远比不同矩阵相乘要快得多，这就是 RNN 痛点最大的根源。
+
+---
+
+### Machine Translation & Sequence-to-sequence
+
+神经机器翻译(Neural Machine Translation, NMT) 核心架构是Seq2Seq 模型 (The Sequence-to-Sequence Model)。
+
+它的第一部分被称为**编码器（Encoder）** 。Encoder 通常是一个 RNN，它负责读取源语言序列（例如法语句子），并将整个句子的语义信息压缩、浓缩成一个连续的向量表示（Encoding） 。
+
+- 这个由 Encoder 生成的最终向量，实际上就成为了系统第二部分——**解码器（Decoder）**的初始隐藏状态 。这是一种信息传递的接力过程。
+
+**Decoder 本质上就是一个语言模型** 。与在笔记前面部分学到的纯语言模型不同的是，Decoder 在生成每一个目标词（例如英语单词）时，不仅仅依赖前面已经生成的词，它还**始终以 Encoder 传过来的源句子编码作为条件（Conditioned on encoding）**
+
+- Seq2Seq 架构的优雅之处在于其高度的泛化能力 。只要任务可以抽象为“输入一个序列网络生成表示，输出另一个网络基于该表示生成新序列”，就可以使用这种 Encoder-Decoder 范式 。
+
+数学上，Seq2Seq 属于**条件语言模型（Conditional Language Model）** 。它不再像 SMT 那样拆解概率，而是直接对联合条件概率进行建模 。
+
+在解码生成目标句子时，每一步生成目标词的概率，都是基于**源句子 $x$** 加上**之前已经生成的所有目标词** 。公式中的 $x$ 就像一个强有力的先验上下文，始终引导着生成方向：
+
+$P(y|x)=P(y_{1}|x)P(y_{2}|y_{1},x)P(y_{3}|y_{1},y_{2},x)...P(y_{T}|y_{1},...,y_{T-1},x)$
+
+在训练时，给定一个真实的平行语料对，我们将源句子输入 Encoder，Decoder 会在每个时间步输出一个词汇表上的概率分布 $\hat{y}$ 。损失函数 $J_t$ 就是目标真实词汇在这个预测分布中的**负对数概率（Negative log probability，即交叉熵损失）** 。整个序列的损失就是所有时间步损失的平均值 ：
+
+$J=\frac{1}{T}\sum_{t=1}^{T}J_{t}$" 且 $J_t$ 是 "negative log prob of target word"
+
+整个 Seq2Seq 架构（包括 Encoder 和 Decoder）被视为一个单一的巨型系统 。我们不需要分开训练语言模型和翻译模型，**反向传播（Backpropagation）会直接以端到端（End-to-end）的方式贯穿整个网络**，模型会自动学习如何在内部最优地分配特征表示 。
+
+为了提取更高级、更复杂的语言特征，现代的 NMT 系统不会只使用单层 RNN，而是将多个 RNN 层垂直堆叠起来 。在多层架构中，底层 RNN 捕捉局部的词法和句法特征，其输出的隐藏状态直接作为上一层 RNN 的输入，而顶层 RNN 则负责捕捉更抽象的全局语义 。这使得模型具备了极强的表达能力。
+
+---
+
+### Attention Mechanism
+
+Issues with recurrent models:
+
+- RNN 存在**线性交互距离**的问题。由于信息必须一步一步地沿着时间轴传递，句子开头的词（比如主语）要和句子末尾的词发生交互，需要经过 $O(\text{sequence length})$ 步的传递 。在这个漫长的过程中，早期的信息很容易丢失，导致模型难以学习到长距离的依赖关系 。
+- 由于 RNN 的隐藏状态 $h_t$ 必须依赖上一步的 $h_{t-1}$，这导致前向和反向传播都包含 $O(\text{sequence length})$ 个无法并行的操作 。GPU 最擅长的是同时进行大量独立计算，而 RNN 的这种时序依赖性极大地限制了并行计算能力，导致其无法在超大规模数据集上进行高效训练 。
+
+Attention 的核心思想非常直观：在 Decoder 生成每个词的时刻，不再仅仅依赖那个被压缩到极致的“最终隐藏状态瓶颈”，而是建立一条**直接连接** 。让 Decoder 直接回头去看 Encoder 中所有的隐藏状态，并且根据当前的需要，**动态聚焦（Focus on）**在源句子中特定的部分 。
+
+在数学本质上，Attention 其实就是一种**加权平均 (Weighted averaging)** 。你可以把它想象成数据库中的“软查询（Soft Lookup）。
+
+> In attention, the query matches all keys softly, to a weight between 0 and 1. The keys’ values are multiplied by the weights and summed.
+
+三个非常关键的通用概念：**查询 (Query)**、**键 (Key)** 和 **值 (Value)** 。Query 拿着自己的特征，去和所有的 Keys 进行“软匹配”，得到一个介于 $0$ 到 $1$ 之间的权重 。然后，将这些权重分别乘以对应的 Values，最后把它们加起来 。
+
+假设我们有 Encoder 的隐藏状态 $h_{1},...,h_{N}\in\mathbb{R}^{h}$，以及在时间步 $t$ 的 Decoder 隐藏状态 $s_{t}\in\mathbb{R}^{h}$ 。
+
+- **第一步：计算注意力得分 (Attention scores)**
+  - We get the attention scores $e^{t}$ for this step: $e^{t}=[s_{t}^{T}h_{1},...,s_{t}^{T}h_{N}]\in\mathbb{R}^{N}$
+  - 将当前的 Decoder 状态 $s_t$（作为 Query）与每一个 Encoder 状态 $h_i$（作为 Key）进行点积（Dot product）计算 。点积的几何意义是衡量两个向量的相似度，相似度越高，得分 $e^t$ 越大。
+- **第二步：计算注意力分布 (Attention distribution)**
+  - "We take softmax to get the attention distribution for this step (this is a probability distribution and sums to 1)... $\alpha^{t}=softmax(e^{t})\in\mathbb{R}^{N}$
+  - 直接算出的得分范围不一，因此通过 Softmax 函数将它们转化为一个概率分布 $\alpha^t$ 。转化后，所有的权重都在 $0$ 到 $1$ 之间，且总和为 $1$。这代表了 Decoder 在当前时刻对源句子每个词的“关注度” 。
+- **第三步：计算注意力输出 (Attention output)**
+  - We use $\alpha^{t}$ to take a weighted sum of the encoder hidden states to get the attention output $a_{t}=\sum_{i=1}^{N}\alpha_{i}^{t}h_{i}\in\mathbb{R}^{h}$
+  - 用刚刚算出的权重 $\alpha^t$，对所有的 Encoder 隐藏状态 $h_i$（作为 Value）进行加权求和 。得到的输出 $a_t$ 完美融合了当前 Decoder 最需要的那部分源句子信息 。
+- **第四步：拼接与生成 (Concatenate & Predict)**
+  - Finally we concatenate the attention output $a_{t}$ with the decoder hidden state $s_{t}$ and proceed as in the non-attention seq2seq model... $[a_{t};s_{t}]\in\mathbb{R}^{2h}$
+  - 最后，将这个富含针对性信息的注意力向量 $a_t$ 与原本的 Decoder 隐藏状态 $s_t$ 直接拼接在一起，生成一个维度为 $2h$ 的新向量 。基于这个强大的融合向量，再通过输出层（通常是一个带有 Softmax 的全连接层）去预测下一个词 $\hat{y}_t$ 。
+
+它彻底消除了 Encoder 必须把所有信息压缩到一个固定大小向量的瓶颈，Decoder 现在可以按需自由提取源句子的信息 。这也是一种**架构上的“直连通道”**。在反向传播时，误差可以通过 Attention 直接跳过中间所有的时间步，瞬间传回到 Encoder 的对应位置，极大地缓解了 RNN 中的梯度消失问题 。
+
+深度学习一直被诟病为“黑盒”，但 Attention 提供了一种极佳的可解释性。通过可视化注意力分布矩阵 $\alpha^t$，我们可以清晰地看到在翻译某个特定词时，模型正在盯着源句子的哪个词看（这在学术上称为**软对齐 Soft Alignment**），而且这一切都是模型自己学出来的，完全“免费” 
+
+
+
