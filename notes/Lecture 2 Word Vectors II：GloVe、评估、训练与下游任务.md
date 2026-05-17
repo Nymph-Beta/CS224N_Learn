@@ -8,6 +8,29 @@
 
 ---
 
+### 视觉总览：这节课的三条线
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart LR
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    A["语料中的共现次数"] --> B["共现矩阵 X"]
+    B --> C["GloVe 目标函数"]
+    C --> D["词向量空间"]
+    D --> E["Intrinsic 评估"]
+    D --> F["Extrinsic 下游任务"]
+    F --> G["是否微调 embedding"]
+
+    class A source;
+    class B,C,D,F process;
+    class E,G output;
+```
+
+这张图可以帮你把 Lecture 2 看成一个连续故事：先从语料统计出发，得到共现矩阵；GloVe 学的是一个能解释这些共现统计的向量空间；学完以后再问“这个空间好不好”，于是分成 intrinsic 和 extrinsic 两类评估。
+
 ### 1. Glove究竟解决什么问题
 
 先对比两类旧方法： 
@@ -26,6 +49,33 @@
 
 **GloVe 的定位**：想要把这两者优点合起来——用全局共现统计，又能学出好用的向量空间结构。
 
+#### 视觉脚手架：GloVe 夹在两类方法中间
+
+![词向量方法三栏对比：Count-based、Window-based 与 GloVe](<pic/whiteboard_exported_image (1).png>)
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart TB
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    A["Count-based 方法"] --> C["GloVe"]
+    B["Window-based 方法"] --> C
+    A --> A1["优势：全局统计"]
+    A --> A2["短板：类比结构弱"]
+    B --> B1["优势：局部预测强"]
+    B --> B2["短板：全局统计利用不足"]
+    C --> C1["用全局共现训练"]
+    C --> C2["目标是得到几何结构好的词向量"]
+
+    class A,B source;
+    class C process;
+    class A1,A2,B1,B2,C1,C2 output;
+```
+
+读这一节时可以抓住一个问题：GloVe 不是单纯“预测上下文”，而是要让向量点积解释全局共现强度。
+
 ---
 
 ### 2. 共现矩阵： Glove的数据是什么样的
@@ -39,6 +89,34 @@
 $X_{\text{ice,cold}}$ 大，$X_{\text{ice,hot}}$ 小，那么 $P(\text{cold}\mid \text{ice})$ 就大，$P(\text{hot}\mid \text{ice}$) 就小。
 
 **GloVe 训练就是要把这种统计规律“编码进向量里”。**
+
+#### 视觉脚手架：共现矩阵长什么样
+
+| 中心词 i / 上下文词 j | cold | hot | steam | ice |
+| --- | ---: | ---: | ---: | ---: |
+| ice | 120 | 3 | 2 | 0 |
+| steam | 1 | 90 | 0 | 4 |
+| winter | 80 | 5 | 1 | 6 |
+
+这一类表格就是 $X_{ij}$ 的直观形状：每一行固定一个中心词，每一列表示某个上下文词出现了多少次。GloVe 后面要做的事，可以先想成“把这张大表压缩成两个低维向量表”。
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart LR
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    A["原始文本"] --> B["滑动上下文窗口"]
+    B --> C["累计词对出现次数"]
+    C --> D["共现矩阵 X"]
+    D --> E["log X"]
+    E --> F["用词向量点积拟合"]
+
+    class A source;
+    class B,C,D,E process;
+    class F output;
+```
 
 ---
 
@@ -110,6 +188,36 @@ $J=-\sum_{i\in\text{corpus}}\sum_{j\in \text{context}(i)}\log Q_{ij}$
 
    这也解释了为什么 GloVe 常被看成一种“加权的矩阵分解”：在分解 $\log X$。
 
+   #### 视觉脚手架：从概率拟合到矩阵分解
+
+   ```mermaid
+   %%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+   flowchart TB
+       classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+       classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+       classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+       classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+       A["想拟合条件概率 P(j|i)"] --> B["softmax 需要遍历全词表"]
+       B --> C["计算太贵"]
+       C --> D["去掉归一化分母"]
+       D --> E["转到 log 空间"]
+       E --> F["让 u_j 点乘 v_i 接近 log X_ij"]
+       F --> G["加权最小二乘"]
+   
+       class A source;
+       class B,C,D,E,F process;
+       class G output;
+   ```
+
+   一个很稳的记忆方式是：
+
+   | 对象 | 直觉 |
+   | --- | --- |
+   | $X_{ij}$ | 词 $i$ 和词 $j$ 的共现证据 |
+   | $\log X_{ij}$ | 把极端大计数压平，避免高频词统治训练 |
+   | $\mathbf{u}_j^\top\mathbf{v}_i$ | 模型对这对词共现强度的解释 |
+   | $f(X_{ij})$ | 这条共现证据有多可信 |
+
 3. 权重 $X_i$ 换成一般的 $f(X_{ij})$
 
    用 $X_i$ 当权重不一定最优，于是引入更一般的权重函数（可依赖 $X_{ij}$）：
@@ -139,9 +247,36 @@ Extrinsic（外在评估）
 - 在真实任务中（情感分类、NER、QA…）
 - 缺点：慢；而且如果效果不好，你很难判断是 embedding 的锅还是下游模型/数据/训练策略的原因。
 
+#### 视觉脚手架：两类评估在问不同的问题
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart LR
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    A["训练好的 embedding"] --> B["Intrinsic"]
+    A --> C["Extrinsic"]
+    B --> B1["类比题"]
+    B --> B2["词相似度相关性"]
+    B --> B3["快，但只是代理任务"]
+    C --> C1["NER"]
+    C --> C2["情感分类"]
+    C --> C3["慢，但最接近真实目标"]
+
+    class A source;
+    class B,C process;
+    class B1,B2,B3,C1,C2,C3 output;
+```
+
+可以把 intrinsic 当作“体检指标”，extrinsic 当作“真正上场比赛”。体检指标好通常有帮助，但不能保证比赛一定赢。
+
 ---
 
 Intrinsic 经典：类比（Analogy）到底怎么算？
+
+![词向量类比示意：king - man + woman 约等于 queen](<pic/whiteboard_exported_image (2).png>)
 
 标准公式为：$ a:b :: c:?$
 
@@ -194,6 +329,8 @@ tips：GloVe 常用窗口大小大约 8（讲义的 Implementation Tip）。
 
 多义词怎么处理：一个词多个向量（Multi-prototype）
 
+![Multi-Prototype Embedding：bank 的河岸义与金融义两个聚类中心](<pic/whiteboard_exported_image (3).png>)
+
  Huang et al. (2012) 的思路： 
 
 方法非常直白：
@@ -224,6 +361,38 @@ tips：GloVe 常用窗口大小大约 8（讲义的 Implementation Tip）。
 - **数据集大：可以考虑微调**（覆盖词表更充分，微调更像“任务适配”）
 
 ---
+
+#### 视觉脚手架：是否微调 embedding 的决策树
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart TB
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    A["下游任务开始"] --> B{"数据量够大吗"}
+    B -->|否| C["冻结 embedding"]
+    C --> C1["只训练分类器 W"]
+    C --> C2["保护原来的语义空间"]
+    B -->|是| D["可以微调 embedding"]
+    D --> D1["任务适配更强"]
+    D --> D2["需要正则化和验证集监控"]
+
+    class A source;
+    class B decision;
+    class C,D process;
+    class C1,C2,D1,D2 output;
+```
+
+参数量的视觉对比：
+
+| 训练方式 | 主要可训练参数 | 过拟合风险 |
+| --- | --- | --- |
+| 冻结 embedding | $C\cdot d$ | 较低 |
+| 微调 embedding | $C\cdot d + |V|\cdot d$ | 明显更高 |
+
+如果下游数据很小，最危险的不是分类器学不好，而是少数出现过的词向量被拉歪，破坏了原本相邻词之间的几何关系。
 
 **训练通过softmax分类器，输入 $x\in \mathbb{R}^d$，输出属于各类的概率分布**，分类概率为：
 
@@ -368,3 +537,25 @@ $p(y\mid x)=\text{softmax}(W_2 h + b_2)$
 > 因为线性变换的复合仍是线性：$W_2(W_1 x)= (W_2W_1)x$
 >
 > 没有 $\sigma$ 就不会获得非线性边界。
+
+#### 视觉脚手架：窗口分类到非线性分类器
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart LR
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    A["窗口词向量拼接"] --> B["线性层 W1"]
+    B --> C["非线性激活 sigma"]
+    C --> D["隐藏表示 h"]
+    D --> E["线性层 W2"]
+    E --> F["softmax 类别概率"]
+
+    class A source;
+    class B,C,D,E process;
+    class F output;
+```
+
+这里的图对应最后的最小 MLP：窗口拼接只是在组织输入；真正让边界弯起来的是中间的非线性激活。

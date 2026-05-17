@@ -21,6 +21,30 @@
 
 ---
 
+### 视觉总览：前向、损失、反向是一条闭环
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart LR
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    A["输入 x"] --> B["线性变换 z = Wx + b"]
+    B --> C["非线性激活 a = f(z)"]
+    C --> D["输出打分 s"]
+    D --> E["损失 J"]
+    E --> F["反向传播 delta"]
+    F --> G["参数梯度"]
+    G --> H["更新 W 和 b"]
+    H --> B
+
+    class A source;
+    class B,C,D,E,F,G,H process;
+```
+
+这篇笔记最适合按“闭环”来读：前向传播负责算分数，损失函数负责判断好坏，反向传播负责把这个判断分摊回每个参数。
+
 ### 1. 神经元与单层：从 logistic 回归到“并行的多个 detector”
 
 神经网络时具有非线性决策边界的分类器。现在要看是如何实现的这一点。
@@ -30,6 +54,8 @@
 接收 $n$ 个输入产生一个输出。输入是一个向量 $x\in\mathbb{R}^n$，参数是权重 $w\in\mathbb{R}^n$ 和偏置 $b\in\mathbb{R}$，先做线性组合，再过非线性（sigmoid）得到输出：
 
 $a=\sigma(w^\top x+b)=\frac{1}{1+\exp(-(w^\top x+b))}$
+
+![单个神经元的计算流：输入、加权求和、激活函数与输出](<pic/whiteboard_exported_image (4).png>)
 
 可以理解为：
 
@@ -67,6 +93,32 @@ $a=\sigma(w^\top x+b)=\frac{1}{1+\exp(-(w^\top x+b))}$
 >
 > “ $m$ 个不同的特征探测器”。每个神经元的$ w^{(i)}$ 学到一种“输入特征组合”，输出$a_i$ 就像“这种组合是否出现/强弱”。
 
+#### 视觉脚手架：一层就是多个探测器并排工作
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart LR
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    X["同一个输入 x"] --> N1["神经元 1"]
+    X --> N2["神经元 2"]
+    X --> N3["神经元 3"]
+    N1 --> A1["a1"]
+    N2 --> A2["a2"]
+    N3 --> A3["a3"]
+    A1 --> A["激活向量 a"]
+    A2 --> A
+    A3 --> A
+
+    class X source;
+    class N1,N2,N3,A1,A2,A3 process;
+    class A output;
+```
+
+矩阵 $W\in\mathbb{R}^{m\times n}$ 的每一行对应一个神经元，所以 $Wx$ 一次性算出了所有探测器的匹配分数。
+
 ------
 
 #### **1.3 Feed-forward Computation (前馈计算：从特征提取到决策)**
@@ -94,6 +146,34 @@ $a=\sigma(w^\top x+b)=\frac{1}{1+\exp(-(w^\top x+b))}$
   - **权重矩阵** $W \in \mathbb{R}^{8 \times 20}$，偏置 $b \in \mathbb{R}^8$。
   - **激活向量** $a \in \mathbb{R}^8$。
   - **输出权重** $U \in \mathbb{R}^{8 \times 1}$，最终得分 $s \in \mathbb{R}$。
+
+###### 视觉脚手架：两层网络的维度流
+
+![两层 MLP 前向传播：x 到 z 到 a 到 s 的维度流](<pic/whiteboard_exported_image (5).png>)
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart LR
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    X["x: 20 维输入"] --> Z["z = Wx + b: 8 维"]
+    Z --> A["a = sigma(z): 8 维"]
+    A --> S["s = U^T a: 标量"]
+
+    class X source;
+    class Z,A process;
+    class S output;
+```
+
+| 符号 | 形状 | 角色 |
+| --- | --- | --- |
+| $x$ | $20\times 1$ | 原始窗口特征 |
+| $W$ | $8\times 20$ | 8 个隐层探测器 |
+| $z$ | $8\times 1$ | 激活前分数 |
+| $a$ | $8\times 1$ | 激活后的高级特征 |
+| $U$ | $8\times 1$ | 把高级特征合成最终分数 |
 
 ##### **3. 核心解读：权重与特征的物理意义 (Deep Interpretation)**
 
@@ -161,11 +241,27 @@ $a=\sigma(w^\top x+b)=\frac{1}{1+\exp(-(w^\top x+b))}$
     - 如果 $s$ 非常高（$s \ge s_c + 1$）：Loss = 0（模型做得很好，甚至超额完成任务，不罚）。
     - 如果 $s$ 不够高（$s < s_c + 1$）：Loss = $1 + s_c - s$（即使 $s > s_c$ 但没超过 1，也要稍微罚一点；如果 $s < s_c$，重罚）。
 
+##### 视觉脚手架：最大间隔损失在比较两条分数线
+
+```text
+坏样本分数 s_c        安全边界 s_c + 1             好样本分数 s
+      |-----------------------|--------------------------|
+                      如果 s 落在这里左边，就还有 loss
+```
+
+| 情况 | 条件 | Loss |
+| --- | --- | --- |
+| 已经拉开间隔 | $s \ge s_c + 1$ | $0$ |
+| 赢了但不够多 | $s_c < s < s_c + 1$ | $1+s_c-s$ |
+| 输给坏样本 | $s \le s_c$ | 更大的 $1+s_c-s$ |
+
 ---
 
 #### 1.5 Training with Backpropagation – Elemental（逐参数的反向传播：链式法则走）
 
 讲义用 toy network 推导一个典型结果：
+
+![逐元素反向传播推导总览：链式法则、多路径误差、bias 与 hinge loss](<pic/whiteboard_exported_image (6).png>)
 
 - $\frac{\partial s}{\partial W^{(1)}_{ij}}=\delta^{(2)}_i\cdot a^{(1)}_j$
 - **$\delta$ 是什么？** $\delta$ 是**中间工具（误差信号）**。它代表链式法则中“从输出层传回来的那部分梯度”。并且 $\delta^{(2)}_i$ 表示到达第 2 层第 $i$ 个神经元 pre-activation $z^{(2)}_i$ 的误差信号。
@@ -185,6 +281,28 @@ $z^{(2)} = W^{(1)}a^{(1)}+b^{(1)},\quad a^{(2)} = f(z^{(2)}),\quad s = (W^{(2)})
 > 3. 传给下一层。
 >
 > **$W^{(k)}$ 是把第 $k$ 层输出映射到第 $k+1$ 层输入的转移矩阵** 。
+
+###### 视觉脚手架：反向传播先要画清前向依赖
+
+![反向传播计算图：误差信号沿计算图回流](<pic/飞书文档 - 图片.svg>)
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart LR
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    A1["a^(1)"] --> Z2["z^(2) = W^(1)a^(1) + b^(1)"]
+    Z2 --> A2["a^(2) = f(z^(2))"]
+    A2 --> S["s = W^(2)^T a^(2)"]
+
+    class A1 source;
+    class Z2,A2 process;
+    class S output;
+```
+
+求某个参数的梯度时，不要先背公式，先沿着这张依赖图找路径。比如 $W^{(1)}_{ij}$ 只能先影响 $z_i^{(2)}$，再影响 $a_i^{(2)}$，最后影响 $s$。
 
 ##### **Step 1：从输出往回，对** $W^{(1)}_{ij}$ **用链式法则**
 
@@ -222,6 +340,44 @@ $$\delta^{(k-1)}_j = \frac{\partial s}{\partial z^{(k-1)}_j} = \sum_i \left( \un
 
 其中 $\frac{\partial z^{(k)}_i}{\partial z^{(k-1)}_j} = W^{(k-1)}_{ij} \cdot f'(z^{(k-1)}_j)$。
 
+###### 视觉脚手架：为什么要对所有路径求和
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart LR
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    ZJ["z_j at layer k-1"] --> AJ["a_j = f(z_j)"]
+    AJ --> Z1["z_1 at layer k"]
+    AJ --> Z2["z_2 at layer k"]
+    AJ --> Z3["z_3 at layer k"]
+    Z1 --> S["最终分数 s"]
+    Z2 --> S
+    Z3 --> S
+
+    class ZJ source;
+    class AJ,Z1,Z2,Z3 process;
+    class S output;
+```
+
+从 $z_j^{(k-1)}$ 到 $s$ 有多条路，每条路都贡献一部分梯度，所以多元链式法则要求把它们加起来。单条路的局部导数拆成两段：
+
+```text
+z_j^(k-1) -> a_j^(k-1) -> z_i^(k)
+   f'(z_j)       W_ij
+```
+
+因此
+
+$$
+\frac{\partial z_i^{(k)}}{\partial z_j^{(k-1)}} =
+\frac{\partial z_i^{(k)}}{\partial a_j^{(k-1)}}\cdot
+\frac{\partial a_j^{(k-1)}}{\partial z_j^{(k-1)}} =
+W_{ij}^{(k-1)}f'(z_j^{(k-1)})
+$$
+
 **结论（通用递归公式）**：
 
 $$\delta^{(k-1)}_j = f'(z^{(k-1)}_j) \cdot \underbrace{\sum_i \delta^{(k)}_i W^{(k-1)}_{ij}}_{\text{Error Sharing: 下一层所有误差的加权和}}$$
@@ -255,6 +411,31 @@ $$\nabla W = \frac{\partial J}{\partial W} = \underbrace{(-1) \cdot \frac{\parti
 #### 1.6 反向传播（Vectorized）：把“逐元素”变成矩阵公式
 
 1.5 节是为了**理解原理**（显微镜视角：看一个个神经元怎么传误差），那么 1.6 节就是为了**写出高效代码**（工程视角：利用 NumPy/PyTorch 的矩阵加速）。
+
+##### 视觉脚手架：两个矩阵公式分别回答两个问题
+
+| 问题 | 标量直觉 | 向量化公式 |
+| --- | --- | --- |
+| 当前连接权重该怎么改 | 下一层误差 $\times$ 当前层激活 | $\nabla_{W^{(k)}}=\delta^{(k+1)}(a^{(k)})^\top$ |
+| 误差怎么传回上一层 | 下一层所有误差加权求和，再乘激活导数 | $\delta^{(k)}=f'(z^{(k)})\circ(W^{(k)\top}\delta^{(k+1)})$ |
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart TB
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    D["下一层误差 delta"] --> G["外积得到 W 的梯度"]
+    A["当前层激活 a"] --> G
+    D --> B["乘 W 转置"]
+    B --> C["乘 f'(z)"]
+    C --> E["上一层误差"]
+
+    class D,A source;
+    class B,C process;
+    class G,E output;
+```
 
 ##### 1. 为什么要向量化？(Motivation: Efficiency)
 
@@ -344,6 +525,18 @@ $$f'(\theta) \approx \frac{J(\theta + \epsilon) - J(\theta - \epsilon)}{2\epsilo
 - 计算 `grad[ix]` 并恢复原来的值 。
 - 最后返回计算出的数值梯度向量，你可以把它打印出来和你的反向传播梯度对比。
 
+##### 视觉脚手架：梯度检查是在做左右试探
+
+```text
+theta - epsilon      theta      theta + epsilon
+      |--------------|--------------|
+       先算 J-              再算 J+
+
+斜率约等于 (J+ - J-) / (2 epsilon)
+```
+
+它不是训练方法，而是“拿一个很慢但可靠的尺子”去量反向传播代码有没有写错。
+
 ---
 
 #### 2.2 Regularization（L2 正则）
@@ -403,6 +596,29 @@ $$\nabla W_{total} = \frac{\partial J}{\partial W} + \underbrace{2\lambda W}_{\t
 
 Dropout 是一种强大的正则化技术,最初由 Srivastava等人在 [Dropout: A Simple WaytoPreventNeural Net- works from  Overfitting](https://dl.acm.org/doi/10.5555/2627435.2670313) 中提出。
 
+##### 视觉脚手架：L2 与 Dropout 在约束不同东西
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart LR
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    A["过拟合"] --> B["L2 正则"]
+    A --> C["Dropout"]
+    B --> B1["限制权重过大"]
+    B --> B2["偏好平滑函数"]
+    C --> C1["随机移除部分激活"]
+    C --> C2["减少神经元共适应"]
+
+    class A source;
+    class B,C process;
+    class B1,B2,C1,C2 output;
+```
+
+L2 更像是在约束参数大小；Dropout 更像是在训练很多个共享参数的子网络，让单个神经元别过度依赖固定伙伴。
+
 ##### 1. 核心机制：
 
 - **训练阶段 (Training)**： 在每一次前向传播（Forward Pass）和反向传播中，不是用整个网络，而是**随机“丢弃”（Drop）** 一部分神经元 
@@ -440,6 +656,15 @@ Dropout 是一种强大的正则化技术,最初由 Srivastava等人在 [Dropout
 #### 2.4 其它激活函数
 
 在之前的章节中，一直默认使用 **Sigmoid** 函数来引入非线性 。但在实际应用中，其他激活函数往往能设计出更好的网络 
+
+##### 视觉脚手架：激活函数怎么选
+
+| 激活函数 | 输出范围 | 梯度特点 | 复习时抓住的关键词 |
+| --- | --- | --- | --- |
+| Sigmoid | $(0,1)$ | 饱和区梯度小 | 概率感强，但深层训练慢 |
+| Tanh | $(-1,1)$ | 仍会饱和 | 零中心，比 sigmoid 好一些 |
+| ReLU | $[0,\infty)$ | 正区间梯度稳定 | 默认强基线，稀疏激活 |
+| Leaky ReLU | 负区间保留小斜率 | 缓解 dead ReLU | 负半轴不完全关死 |
 
 ##### 1. Sigmoid (经典但老旧)
 
@@ -653,6 +878,32 @@ Dropout 是一种强大的正则化技术,最初由 Srivastava等人在 [Dropout
 
 讲义介绍了三个里程碑式的算法：
 
+![优化器演进路线：SGD、Momentum、AdaGrad、RMSProp 到 Adam](<pic/whiteboard_exported_image (7).png>)
+
+##### 视觉脚手架：优化器从“统一步长”到“自适应步长”
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 46, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart LR
+    classDef source fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1.5px;
+    classDef process fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a,stroke-width:1.25px;
+    classDef decision fill:#fff7ed,stroke:#f59e0b,color:#7c2d12,stroke-width:1.5px;
+    classDef output fill:#f5f3ff,stroke:#8b5cf6,color:#3b0764,stroke-width:1.5px;
+    A["SGD"] --> B["Momentum"]
+    B --> C["AdaGrad"]
+    C --> D["RMSProp"]
+    D --> E["Adam"]
+    A --> A1["只看当前梯度"]
+    B --> B1["加入速度惯性"]
+    C --> C1["历史大梯度方向走慢些"]
+    D --> D1["用滑动平均避免学习率过早归零"]
+    E --> E1["Momentum + RMSProp 思路合并"]
+
+    class A source;
+    class B,C,D,E process;
+    class A1,B1,C1,D1,E1 output;
+```
+
 ##### **1. AdaGrad (Adaptive Gradient)**
 
 - **机制**：给每个参数分配独立的学习率。
@@ -700,8 +951,3 @@ Dropout 是一种强大的正则化技术,最初由 Srivastava等人在 [Dropout
 > - **显存优化**：对于超大模型，现在还有 **8-bit Adam**（把优化器状态量化以节省显存）。
 
 ------
-
-
-
-
-
