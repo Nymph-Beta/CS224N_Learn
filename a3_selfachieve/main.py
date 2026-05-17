@@ -138,6 +138,76 @@ def assert_no_attention_to_future(name: str, attention_weights: AttentionWeights
             f"{name} should not attend to future tokens, max_future_weight={max_future_weight:.8f}"
         )
 
+
+class SingleHeadDecoderBlock(nn.Module):
+    """
+    Package the hand-written Step 6 flow into one reusable decoder block.
+
+    It is the same structure you expanded in main():
+
+        hidden
+        -> LayerNorm
+        -> causal single-head self-attention
+        -> residual add
+        -> LayerNorm
+        -> FFN
+        -> residual add
+        -> block output
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+
+        # 两个 LayerNorm 分别服务于 attention 分支和 FFN 分支。
+        # 这是 pre-norm 写法：每个子模块先 norm，再计算，再 residual add。
+        self.attention_layer_norm = nn.LayerNorm(D_MODEL)
+        self.ffn_layer_norm = nn.LayerNorm(D_MODEL)
+
+        # 单头 self-attention 的 Q/K/V 投影。
+        self.q_projection = nn.Linear(D_MODEL, D_MODEL, bias=False)
+        self.k_projection = nn.Linear(D_MODEL, D_MODEL, bias=False)
+        self.v_projection = nn.Linear(D_MODEL, D_MODEL, bias=False)
+
+        # position-wise FFN：D_MODEL -> D_FF -> D_MODEL。
+        self.ffn_up_projection = nn.Linear(D_MODEL, D_FF)
+        self.ffn_down_projection = nn.Linear(D_FF, D_MODEL)
+
+    def forward(self, hidden: HiddenStates) -> HiddenStates:
+        assert_shape("SingleHeadDecoderBlock input hidden", hidden, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+
+        # 先复用 main() 里已经跑通的 pre-norm attention 路径。
+        attention_input = self.attention_layer_norm(hidden)
+
+        q = self.q_projection(attention_input)
+        k = self.k_projection(attention_input)
+        v = self.v_projection(attention_input)
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(D_MODEL)
+        causal_mask = torch.triu(
+            torch.ones(SEQ_LEN, SEQ_LEN, device=scores.device, dtype=torch.bool),
+            diagonal=1
+        )
+        masked_scores = scores.masked_fill(causal_mask, float("-inf"))
+        attention_weights = F.softmax(masked_scores, dim=-1)
+
+        assert_attention_rows_sum_to_one("SingleHeadDecoderBlock attention_weights", attention_weights)
+        assert_no_attention_to_future("SingleHeadDecoderBlock attention_weights", attention_weights)
+
+        attention_output = torch.matmul(attention_weights, v)
+        hidden_after_attention = hidden + attention_output
+
+        # 再复用 main() 里已经跑通的 pre-norm FFN 路径。
+        ffn_input = self.ffn_layer_norm(hidden_after_attention)
+        ffn_hidden = self.ffn_up_projection(ffn_input)
+        ffn_activated = F.relu(ffn_hidden)
+        ffn_output = self.ffn_down_projection(ffn_activated)
+        hidden_after_ffn = hidden_after_attention + ffn_output
+
+        assert_shape("SingleHeadDecoderBlock output hidden", hidden_after_ffn, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+        return hidden_after_ffn
+
+
+
 def main() -> None:
     torch.manual_seed(0)
 
@@ -479,6 +549,35 @@ def main() -> None:
 
     print(f"loss: {loss.item():.4f}")
     print("ok: Step 1 pipeline is runnable")
+    print()
+
+    # Step 6B:
+    # 上面保留的是手写展开版：每个中间张量都能看见，适合学习。
+    # 这里把同一条 decoder block 路径封装进 SingleHeadDecoderBlock，再跑一遍。
+    # 注意：decoder_block 有自己随机初始化的一套参数，所以 block_loss 不需要等于上面的 loss。
+    print("Step 6B: hidden -> SingleHeadDecoderBlock -> block_logits -> block_loss")
+    print()
+
+    decoder_block = SingleHeadDecoderBlock()
+    block_output = decoder_block(hidden)
+
+    assert_shape("block_output", block_output, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+    show_tensor("block_output", block_output)
+
+    # 这里复用已经创建好的 output_projection，把 block_output 投影到词表 logits。
+    # 如果以后要做正式模型，可以把这个 projection 也封装进 MiniTransformerLM。
+    block_logits = output_projection(block_output)
+
+    assert_shape("block_logits", block_logits, (BATCH_SIZE, SEQ_LEN, VOCAB_SIZE))
+    show_tensor("block_logits", block_logits)
+
+    block_loss = F.cross_entropy(
+        block_logits.reshape(BATCH_SIZE * SEQ_LEN, VOCAB_SIZE),
+        targets.reshape(BATCH_SIZE * SEQ_LEN),
+    )
+
+    print(f"block_loss: {block_loss.item():.4f}")
+    print("ok: SingleHeadDecoderBlock is runnable")
     print()
 
     # TODO 8-9:
