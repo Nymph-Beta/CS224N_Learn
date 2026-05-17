@@ -111,6 +111,28 @@ def show_attention_matrix(name: str, attention_weights: AttentionWeights) -> Non
     print(first_matrix)
     print()
 
+def assert_no_attention_to_future(name: str, attention_weights: AttentionWeights) -> None:
+    # 这是另一个学习阶段的检查点：被 causal mask 屏蔽掉的未来位置，
+    # 在 softmax 之后的 attention weight 应该是 0。
+    # 这里重新构造同样的上三角 mask，用来定位“未来 token”所在的列。
+    future_mask = torch.triu(
+            torch.ones(SEQ_LEN, SEQ_LEN, dtype=torch.bool, device=attention_weights.device),
+            diagonal=1,
+        )
+
+    # attention_weights 的形状是 [batch, query_position, key_position]。
+    # future_mask 的形状是 [query_position, key_position]。
+    # attention_weights[:, future_mask] 会对每个 batch 取出所有被 mask 的未来位置权重，
+    # 得到形状 [BATCH_SIZE, future_position_count] 的检查张量。
+    future_weights = attention_weights[:, future_mask]
+
+    # 如果 causal mask 生效，所有未来位置在 softmax 后都应该非常接近 0。
+    # 这里用 allclose 而不是 ==，是为了允许浮点计算中的极小误差。
+    if not torch.allclose(future_weights, torch.zeros_like(future_weights), atol=1e-6):
+        max_future_weight = future_weights.abs().max().item()
+        raise AssertionError(
+            f"{name} should not attend to future tokens, max_future_weight={max_future_weight:.8f}"
+        )
 
 def main() -> None:
     torch.manual_seed(0)
@@ -230,9 +252,38 @@ def main() -> None:
     assert_shape("scores", scores, (BATCH_SIZE, SEQ_LEN, SEQ_LEN))
     show_tensor("scores", scores)
 
+    # causal mask 用来禁止当前位置看见未来位置。
+    # 先创建一个 [SEQ_LEN, SEQ_LEN] 的布尔矩阵，再用 torch.triu 只保留主对角线上方的部分。
+    # diagonal=1 表示从主对角线右上方一格开始标 True：
+    # - False 的位置保留，表示 query 可以 attend 到这些 key。
+    # - True 的位置会被屏蔽，表示 query 不允许 attend 到未来 key。
+    causal_mask = torch.triu(
+        torch.ones(SEQ_LEN, SEQ_LEN, device=scores.device, dtype=torch.bool),
+        diagonal=1
+    )
+
+    assert_shape("causal_mask", causal_mask, (SEQ_LEN, SEQ_LEN))
+    show_tensor("causal_mask", causal_mask)
+
+    # 把 causal_mask=True 的未来位置分数替换成 -inf。
+    # 这里不是矩阵乘法，而是逐位置替换：
+    # - mask=False 的位置保留原 scores。
+    # - mask=True 的位置改成 -inf。
+    # 因为 scores 是 [BATCH_SIZE, SEQ_LEN, SEQ_LEN]，causal_mask 是 [SEQ_LEN, SEQ_LEN]，
+    # PyTorch 会把同一个 causal_mask broadcast 到 batch 里的每个样本。
+    masked_scores = scores.masked_fill(causal_mask, float("-inf"))
+    assert_shape("masked_scores", masked_scores, (BATCH_SIZE, SEQ_LEN, SEQ_LEN))
+    show_tensor("masked_scores", masked_scores)
+
+
     # softmax 在最后一维上做归一化，也就是让每个 query 对所有 key 的分数
     # 变成一行概率分布。归一化后，每一行的和应该接近 1。
-    attention_weights = F.softmax(scores, dim=-1)
+    # 原始版本直接对 scores 做 softmax，会允许每个位置看见未来 token：
+    # attention_weights = F.softmax(scores, dim=-1)
+    # 现在改成对 masked_scores 做 softmax；-inf 经过 softmax 后会变成 0，
+    # 所以未来 token 的 attention weight 会被压到 0。
+    attention_weights = F.softmax(masked_scores, dim=-1)
+
     assert_shape("attention_weights", attention_weights, (BATCH_SIZE, SEQ_LEN, SEQ_LEN))
     # 原来直接打印整个 batch 的 attention tensor，适合看完整数值：
     # show_tensor("attention_weights", attention_weights)
@@ -266,6 +317,8 @@ def main() -> None:
     # 这里保留原来的重复打印代码作为学习记录，但先注释掉，避免运行时输出两遍。
     # row_sums = attention_weights.sum(dim=-1)
     # show_tensor("attention_weights row sums", row_sums)
+
+    assert_no_attention_to_future("attention_weights", attention_weights)
 
     # 用注意力权重对 value 做加权求和。
     # attention_weights: [batch, seq_len, seq_len]
