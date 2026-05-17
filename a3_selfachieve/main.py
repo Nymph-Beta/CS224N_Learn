@@ -66,6 +66,43 @@ def stop_at(todo_name: str, goal: str) -> None:
     print(goal)
     print("After filling it, run this file again.")
 
+def assert_attention_rows_sum_to_one(name: str, attention_weights: AttentionWeights) -> None:
+    # 这是一个学习阶段的检查点：如果 softmax 维度选对了，
+    # attention_weights 的每一行相加都应该是 1。
+    row_sums = attention_weights.sum(dim=-1)
+
+    # 检查 row_sums 的形状是否正确。它应该是 [BATCH_SIZE, SEQ_LEN]，每个位置的值是对应行的和。
+    assert_shape("attention_weights row sums", row_sums, (BATCH_SIZE, SEQ_LEN))
+    
+    show_tensor("attention_weights row sums", row_sums)
+
+    # 构造一个和 row_sums 形状完全相同的“标准答案”张量。
+    # 因为每一行 attention 分布都应该加总为 1，所以这里每个位置的期望值都是 1。
+    expected_row_nums = torch.ones_like(row_sums)
+
+    # 浮点计算会有微小误差，所以不能用 == 逐元素硬比较。
+    # torch.allclose 会允许很小的数值偏差，更适合检查 softmax 这种浮点结果。
+    if not torch.allclose(row_sums, expected_row_nums, atol=1e-6):
+        # 如果检查失败，找出实际行和与期望值 1 之间最大的绝对差。
+        # 这个数能帮助判断问题有多严重：是正常浮点误差，还是 softmax 维度真的选错了。
+        max_diff = (row_sums - expected_row_nums).abs().max().item()
+        raise AssertionError(
+            f"attention_weights rows do not sum to 1: max difference is {max_diff:.4e}"
+        )
+    
+def show_attention_matrix(name: str, attention_weights: AttentionWeights) -> None:
+    first_matrix = attention_weights[0]
+
+    assert_shape(
+        f"{name}[0]",
+        first_matrix,
+        (SEQ_LEN, SEQ_LEN),
+    )
+
+    print(f"{name}[0]: query rows x key columns")
+    print(first_matrix)
+    print()
+
 
 def main() -> None:
     torch.manual_seed(0)
@@ -150,26 +187,38 @@ def main() -> None:
     # 变成一行概率分布。归一化后，每一行的和应该接近 1。
     attention_weights = F.softmax(scores, dim=-1)
     assert_shape("attention_weights", attention_weights, (BATCH_SIZE, SEQ_LEN, SEQ_LEN))
-    show_tensor("attention_weights", attention_weights)
+    # 原来直接打印整个 batch 的 attention tensor，适合看完整数值：
+    # show_tensor("attention_weights", attention_weights)
+    # 现在改成只展示第一个样本的注意力矩阵，更容易观察 query 行和 key 列的关系。
+    show_attention_matrix("attention_weights", attention_weights)
 
-    # 这是一个学习阶段的检查点：如果 softmax 维度选对了，
-    # attention_weights 的每一行相加都应该是 1。
-    row_sums = attention_weights.sum(dim=-1)
-    show_tensor("attention_weights row sums", row_sums)
+    # # 这是一个学习阶段的检查点：如果 softmax 维度选对了，
+    # # attention_weights 的每一行相加都应该是 1。
+    # row_sums = attention_weights.sum(dim=-1)
 
-    # 构造一个和 row_sums 形状完全相同的“标准答案”张量。
-    # 因为每一行 attention 分布都应该加总为 1，所以这里每个位置的期望值都是 1。
-    expected_row_nums = torch.ones_like(row_sums)
+    # # 检查 row_sums 的形状是否正确。它应该是 [BATCH_SIZE, SEQ_LEN]，每个位置的值是对应行的和。
+    # assert_shape("attention_weights row sums", row_sums, (BATCH_SIZE, SEQ_LEN))
+    
+    # show_tensor("attention_weights row sums", row_sums)
 
-    # 浮点计算会有微小误差，所以不能用 == 逐元素硬比较。
-    # torch.allclose 会允许很小的数值偏差，更适合检查 softmax 这种浮点结果。
-    if not torch.allclose(row_sums, expected_row_nums):
-        # 如果检查失败，找出实际行和与期望值 1 之间最大的绝对差。
-        # 这个数能帮助判断问题有多严重：是正常浮点误差，还是 softmax 维度真的选错了。
-        max_diff = (row_sums - expected_row_nums).abs().max().item()
-        raise AssertionError(
-            f"attention_weights rows do not sum to 1: max difference is {max_diff:.4e}"
-        )
+    # # 构造一个和 row_sums 形状完全相同的“标准答案”张量。
+    # # 因为每一行 attention 分布都应该加总为 1，所以这里每个位置的期望值都是 1。
+    # expected_row_nums = torch.ones_like(row_sums)
+
+    # # 浮点计算会有微小误差，所以不能用 == 逐元素硬比较。
+    # # torch.allclose 会允许很小的数值偏差，更适合检查 softmax 这种浮点结果。
+    # if not torch.allclose(row_sums, expected_row_nums, atol=1e-6):
+    #     # 如果检查失败，找出实际行和与期望值 1 之间最大的绝对差。
+    #     # 这个数能帮助判断问题有多严重：是正常浮点误差，还是 softmax 维度真的选错了。
+    #     max_diff = (row_sums - expected_row_nums).abs().max().item()
+    #     raise AssertionError(
+    #         f"attention_weights rows do not sum to 1: max difference is {max_diff:.4e}"
+    #     )
+    assert_attention_rows_sum_to_one("attention_weights", attention_weights)
+    # assert_attention_rows_sum_to_one() 里面已经计算并打印过 row_sums。
+    # 这里保留原来的重复打印代码作为学习记录，但先注释掉，避免运行时输出两遍。
+    # row_sums = attention_weights.sum(dim=-1)
+    # show_tensor("attention_weights row sums", row_sums)
 
     # 用注意力权重对 value 做加权求和。
     # attention_weights: [batch, seq_len, seq_len]
