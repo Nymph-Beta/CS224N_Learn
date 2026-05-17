@@ -30,6 +30,9 @@ BATCH_SIZE = 2
 SEQ_LEN = 4
 VOCAB_SIZE = 16
 D_MODEL = 8
+# 位置向量表允许的最大序列长度。
+# 当前 SEQ_LEN=4，只会用到位置 0, 1, 2, 3；MAX_SEQ_LEN=8 表示表里预留了 8 个位置。
+MAX_SEQ_LEN = 8
 
 
 # These are only semantic names for Tensor roles.
@@ -44,6 +47,11 @@ ValueStates = Tensor  # shape: [BATCH_SIZE, SEQ_LEN, D_MODEL]
 AttentionScores = Tensor  # shape: [BATCH_SIZE, SEQ_LEN, SEQ_LEN]
 AttentionWeights = Tensor  # shape: [BATCH_SIZE, SEQ_LEN, SEQ_LEN]
 AttentionOutput = Tensor  # shape: [BATCH_SIZE, SEQ_LEN, D_MODEL]
+
+# 这里的位置 id 不需要按 batch 复制一份，因为同一个 batch 内每条样本的位置编号相同。
+PositionIds = Tensor  # shape: [SEQ_LEN], dtype: torch.long
+# position_embedding 查表后得到每个位置的向量，之后会 broadcast 到 batch 维度。
+PositionStates = Tensor  # shape: [SEQ_LEN, D_MODEL]
 
 def assert_shape(name: str, tensor: Tensor, expected_shape: tuple[int, ...]) -> None:
     """Observation tool: fail fast when a tensor shape is not what you expect."""
@@ -149,9 +157,48 @@ def main() -> None:
     #   hidden, shape [BATCH_SIZE, SEQ_LEN, D_MODEL]
     token_embedding = nn.Embedding(VOCAB_SIZE, D_MODEL)
 
+    # 位置 embedding 表：第 i 行表示“第 i 个位置”的可学习向量。
+    # token embedding 只知道“这个词是谁”，position embedding 补充“这个词在序列里的第几个位置”。
+    position_embedding = nn.Embedding(MAX_SEQ_LEN, D_MODEL)
+
+    # 位置 id 最大会到 SEQ_LEN - 1，所以位置表的行数必须至少覆盖当前序列长度。
+    # 如果以后把 SEQ_LEN 调大但忘了调 MAX_SEQ_LEN，这里会尽早报错。
+    assert SEQ_LEN <= MAX_SEQ_LEN, "SEQ_LEN must be less than or equal to MAX_SEQ_LEN for position embedding to work."
+
+    # token_hidden 是纯 token id 查表结果：同一个 token id 在不同位置会得到同一个 token 向量。
+    token_hidden = token_embedding(token_ids)
+
+    # 生成当前序列的位置编号：[0, 1, 2, 3]。
+    # device=token_ids.device 保证 position_ids 和 token_ids 在同一个设备上，
+    # 之后如果把模型搬到 GPU，这里也不会出现 CPU/GPU 混用错误。
+    position_ids = torch.arange(
+        SEQ_LEN, dtype=torch.long,
+        device=token_ids.device
+    )
+
+    # 根据位置编号查表，得到每个绝对位置对应的可学习位置向量。
+    position_hidden = position_embedding(position_ids)
+
     # TODO 3:
     # Use token_embedding to convert token_ids into hidden states.
-    hidden = token_embedding(token_ids)
+    # 原始版本只使用 token embedding：
+    # hidden = token_embedding(token_ids)
+    # 现在把 token 信息和位置信息相加，得到真正送入 attention 的输入表示。
+    # token_hidden 的形状是 [BATCH_SIZE, SEQ_LEN, D_MODEL]，
+    # position_hidden 的形状是 [SEQ_LEN, D_MODEL]；PyTorch 会把 position_hidden
+    # 自动 broadcast 到 batch 维度，相当于每条样本都加上同一套位置向量。
+    hidden = token_hidden + position_hidden
+
+    # 这些检查用来确认每一步的张量形状符合预期，尤其是 position_hidden 的 broadcast 前形状。
+    assert_shape("token_hidden", token_hidden, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+    assert_shape("position_ids", position_ids, (SEQ_LEN,))
+    assert_shape("position_hidden", position_hidden, (SEQ_LEN, D_MODEL))
+    assert_shape("hidden", hidden, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+
+    show_tensor("position_ids", position_ids)
+    show_tensor("position_hidden", position_hidden)
+    show_tensor("hidden", hidden)
+
 
     # 自注意力的第一步是把同一份 hidden states 映射成三种不同角色：
     # - q/query：当前位置主动发出的“查询”，用来问自己该关注哪些位置。
