@@ -40,7 +40,7 @@ Logits = Tensor  # shape: [BATCH_SIZE, SEQ_LEN, VOCAB_SIZE]
 
 QueryStates = Tensor  # shape: [BATCH_SIZE, SEQ_LEN, D_MODEL]
 KeyStates = Tensor  # shape: [BATCH_SIZE, SEQ_LEN, D_MODEL]
-ValueStates = Tensor  # shape: [BATCH_SIZE, SEQ_LEN, D_MODEL
+ValueStates = Tensor  # shape: [BATCH_SIZE, SEQ_LEN, D_MODEL]
 AttentionScores = Tensor  # shape: [BATCH_SIZE, SEQ_LEN, SEQ_LEN]
 AttentionWeights = Tensor  # shape: [BATCH_SIZE, SEQ_LEN, SEQ_LEN]
 AttentionOutput = Tensor  # shape: [BATCH_SIZE, SEQ_LEN, D_MODEL]
@@ -116,6 +116,70 @@ def main() -> None:
     # Use token_embedding to convert token_ids into hidden states.
     hidden = token_embedding(token_ids)
 
+    # 自注意力的第一步是把同一份 hidden states 映射成三种不同角色：
+    # - q/query：当前位置主动发出的“查询”，用来问自己该关注哪些位置。
+    # - k/key：每个位置提供的“索引标签”，用来和 query 计算匹配程度。
+    # - v/value：每个位置真正携带的信息内容，最后会被加权汇总。
+    # 这里先用单头注意力，所以 q/k/v 的最后一维仍保持 D_MODEL 不变。
+    q_projection = nn.Linear(D_MODEL, D_MODEL, bias=False)
+    k_projection = nn.Linear(D_MODEL, D_MODEL, bias=False)
+    v_projection = nn.Linear(D_MODEL, D_MODEL, bias=False)
+
+    # 对每个 token 的 hidden vector 分别做线性变换。
+    # 输入 hidden 的形状是 [batch, seq_len, d_model]；
+    # Linear 会作用在最后一维，因此 q/k/v 的形状仍是 [batch, seq_len, d_model]。
+    q = q_projection(hidden)
+    k = k_projection(hidden)
+    v = v_projection(hidden)
+
+    assert_shape("q", q, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+    assert_shape("k", k, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+    assert_shape("v", v, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+
+    # 计算每个 query 对所有 key 的相似度。
+    # k.transpose(-2, -1) 把 key 从 [batch, seq_len, d_model]
+    # 转成 [batch, d_model, seq_len]，这样 q @ k^T 的结果就是
+    # [batch, seq_len, seq_len]：每一行表示某个当前位置对所有上下文位置的打分。
+    # 除以 sqrt(D_MODEL) 是 scaled dot-product attention 的缩放项，
+    # 用来避免 d_model 较大时点积数值过大，导致 softmax 过早饱和。
+    scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(D_MODEL)
+    assert_shape("scores", scores, (BATCH_SIZE, SEQ_LEN, SEQ_LEN))
+    show_tensor("scores", scores)
+
+    # softmax 在最后一维上做归一化，也就是让每个 query 对所有 key 的分数
+    # 变成一行概率分布。归一化后，每一行的和应该接近 1。
+    attention_weights = F.softmax(scores, dim=-1)
+    assert_shape("attention_weights", attention_weights, (BATCH_SIZE, SEQ_LEN, SEQ_LEN))
+    show_tensor("attention_weights", attention_weights)
+
+    # 这是一个学习阶段的检查点：如果 softmax 维度选对了，
+    # attention_weights 的每一行相加都应该是 1。
+    row_sums = attention_weights.sum(dim=-1)
+    show_tensor("attention_weights row sums", row_sums)
+
+    # 构造一个和 row_sums 形状完全相同的“标准答案”张量。
+    # 因为每一行 attention 分布都应该加总为 1，所以这里每个位置的期望值都是 1。
+    expected_row_nums = torch.ones_like(row_sums)
+
+    # 浮点计算会有微小误差，所以不能用 == 逐元素硬比较。
+    # torch.allclose 会允许很小的数值偏差，更适合检查 softmax 这种浮点结果。
+    if not torch.allclose(row_sums, expected_row_nums):
+        # 如果检查失败，找出实际行和与期望值 1 之间最大的绝对差。
+        # 这个数能帮助判断问题有多严重：是正常浮点误差，还是 softmax 维度真的选错了。
+        max_diff = (row_sums - expected_row_nums).abs().max().item()
+        raise AssertionError(
+            f"attention_weights rows do not sum to 1: max difference is {max_diff:.4e}"
+        )
+
+    # 用注意力权重对 value 做加权求和。
+    # attention_weights: [batch, seq_len, seq_len]
+    # v:                 [batch, seq_len, d_model]
+    # 输出仍是每个位置一个 d_model 向量：[batch, seq_len, d_model]。
+    # 直观理解：每个 token 不再只使用自己的 embedding，而是混合了它关注到的其他 token 信息。
+    attention_output = torch.matmul(attention_weights, v)
+    assert_shape("attention_output", attention_output, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+    show_tensor("attention_output", attention_output)
+
     assert_shape("hidden", hidden, (BATCH_SIZE, SEQ_LEN, D_MODEL))
     show_tensor("hidden", hidden)
 
@@ -130,7 +194,11 @@ def main() -> None:
 
     # TODO 5:
     # Use output_projection to convert hidden states into logits.
-    logits = output_projection(hidden)
+    # 原来的最小语言模型直接把 hidden 投影到词表大小：
+    # logits = output_projection(hidden)
+    # 现在中间多了一层自注意力，所以输出层读取的是 attention_output。
+    # 这样每个位置的预测会基于注意力混合后的上下文表示，而不是只基于原始 embedding。
+    logits = output_projection(attention_output)
 
     assert_shape("logits", logits, (BATCH_SIZE, SEQ_LEN, VOCAB_SIZE))
     show_tensor("logits", logits)
