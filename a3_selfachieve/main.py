@@ -235,12 +235,29 @@ def main() -> None:
     k_projection = nn.Linear(D_MODEL, D_MODEL, bias=False)
     v_projection = nn.Linear(D_MODEL, D_MODEL, bias=False)
 
+    # Step 6: 加入 Add & Norm。
+    # 这里采用 pre-norm 写法：先 LayerNorm，再进入 attention / FFN。
+    # LayerNorm 不改变形状，只会在最后一维 D_MODEL 上做归一化，让每个 token 的表示更稳定。
+    attention_layer_norm = nn.LayerNorm(D_MODEL)
+    ffn_layer_norm = nn.LayerNorm(D_MODEL)
+
+    # attention 分支的输入不再直接使用 hidden，而是先对 hidden 做 LayerNorm。
+    # residual add 时仍然会把 attention_output 加回原始 hidden。
+    attention_input = attention_layer_norm(hidden)
+    assert_shape("attention_input", attention_input, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+    show_tensor("attention_input", attention_input)
+
     # 对每个 token 的 hidden vector 分别做线性变换。
-    # 输入 hidden 的形状是 [batch, seq_len, d_model]；
+    # 输入 attention_input 的形状是 [batch, seq_len, d_model]；
     # Linear 会作用在最后一维，因此 q/k/v 的形状仍是 [batch, seq_len, d_model]。
-    q = q_projection(hidden)
-    k = k_projection(hidden)
-    v = v_projection(hidden)
+    # 原来的版本直接从 hidden 生成 q/k/v：
+    # q = q_projection(hidden)
+    # k = k_projection(hidden)
+    # v = v_projection(hidden)
+    # pre-norm 版本改成从 attention_input 生成 q/k/v。
+    q = q_projection(attention_input)
+    k = k_projection(attention_input)
+    v = v_projection(attention_input)
 
     assert_shape("q", q, (BATCH_SIZE, SEQ_LEN, D_MODEL))
     assert_shape("k", k, (BATCH_SIZE, SEQ_LEN, D_MODEL))
@@ -333,6 +350,13 @@ def main() -> None:
     assert_shape("attention_output", attention_output, (BATCH_SIZE, SEQ_LEN, D_MODEL))
     show_tensor("attention_output", attention_output)
 
+    # 第一次 residual add：把 attention 分支的输出加回原始 hidden。
+    # 这样 attention 学到的是对原表示的“增量修改”，而不是完全替换原表示。
+    # 两个张量形状都是 [BATCH_SIZE, SEQ_LEN, D_MODEL]，所以可以逐元素相加。
+    hidden_after_attention = hidden + attention_output
+    assert_shape("hidden_after_attention", hidden_after_attention, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+    show_tensor("hidden_after_attention", hidden_after_attention)
+
     # FFN 的完整结构也可以写成 nn.Sequential。
     # 这里先保留 Sequential 写法作为对照，但实际展开成三步，
     # 方便分别观察升维、ReLU 激活、降维后的中间张量。
@@ -347,10 +371,19 @@ def main() -> None:
     ffn_up_projection = nn.Linear(D_MODEL, D_FF)
     ffn_down_projection = nn.Linear(D_FF, D_MODEL)
 
-    # 对 attention_output 的最后一维做线性升维。
+    # FFN 分支也采用 pre-norm：先对第一次 residual 后的结果做 LayerNorm，
+    # 再送进 FFN。residual add 时会把 ffn_output 加回 hidden_after_attention。
+    ffn_input = ffn_layer_norm(hidden_after_attention)
+    assert_shape("ffn_input", ffn_input, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+    show_tensor("ffn_input", ffn_input)
+
+    # 对 ffn_input 的最后一维做线性升维。
     # 输入形状是 [BATCH_SIZE, SEQ_LEN, D_MODEL]，
     # 输出形状变成 [BATCH_SIZE, SEQ_LEN, D_FF]。
-    ffn_hidden = ffn_up_projection(attention_output)
+    # Step 5 的旧版本曾经直接对 attention_output 做 FFN：
+    # ffn_hidden = ffn_up_projection(attention_output)
+    # Step 6 的 pre-norm 版本改成对 ffn_input 做 FFN。
+    ffn_hidden = ffn_up_projection(ffn_input)
     assert_shape("ffn_hidden", ffn_hidden, (BATCH_SIZE, SEQ_LEN, D_FF))
     show_tensor("ffn_hidden", ffn_hidden)
 
@@ -363,16 +396,22 @@ def main() -> None:
     # 把 FFN 中间表示降回 D_MODEL。
     # 这样 FFN 可以作为 attention 后面的一个模块，而不会改变主干 hidden size。
     ffn_output = ffn_down_projection(ffn_activated)
-    # 这里的 ffn_output 是 attention + FFN 后的输出，后续会被送到 output_projection 进行词表投影。
+    # 这里的 ffn_output 只是 FFN 分支输出，还没有做第二次 residual add。
 
     # 如果不用展开写法，上面三步可以由这个 Sequential 一次完成：
-    # ffn_output = feed_forward(attention_output)
+    # ffn_output = feed_forward(ffn_input)
 
     assert_shape("ffn_output", ffn_output, (BATCH_SIZE, SEQ_LEN, D_MODEL))
     show_tensor("ffn_output", ffn_output)
 
-    assert_shape("hidden", hidden, (BATCH_SIZE, SEQ_LEN, D_MODEL))
-    show_tensor("hidden", hidden)
+    # 第二次 residual add：把 FFN 分支输出加回 hidden_after_attention。
+    # 这一步之后才得到一个完整 Transformer block 的输出。
+    hidden_after_ffn = hidden_after_attention + ffn_output
+    assert_shape("hidden_after_ffn", hidden_after_ffn, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+    show_tensor("hidden_after_ffn", hidden_after_ffn)
+
+    # assert_shape("hidden", hidden, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+    # show_tensor("hidden", hidden)
 
     # TODO 4:
     # Create an output projection.
@@ -390,9 +429,11 @@ def main() -> None:
     # 后来改成先经过 causal self-attention，再直接把 attention_output 投影到词表：
     # logits = output_projection(attention_output)
 
-    # 现在 attention_output 又经过了一层 FFN，所以输出层读取的是 ffn_output。
-    # 这样每个位置的预测会基于“注意力混合 + 非线性变换”后的表示。
-    logits = output_projection(ffn_output)
+    # 再后来加入 FFN，输出层读取的是 ffn_output：
+    # logits = output_projection(ffn_output)
+    # 现在加入 Add & Norm 后，完整 block 的输出是 hidden_after_ffn。
+    # 所以词表投影应该读取 hidden_after_ffn。
+    logits = output_projection(hidden_after_ffn)
 
     assert_shape("logits", logits, (BATCH_SIZE, SEQ_LEN, VOCAB_SIZE))
     show_tensor("logits", logits)
