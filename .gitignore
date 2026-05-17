@@ -23,6 +23,7 @@ build/
 # Cursor
 .specstory/
 .cursor/
+.venv/
 
 # 个人学习记录（不上传）
 a1/README.md
