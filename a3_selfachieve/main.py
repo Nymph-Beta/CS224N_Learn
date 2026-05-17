@@ -38,6 +38,15 @@ MAX_SEQ_LEN = 8
 # 做一次非线性变换后再降回 d_model。这里用 16 是为了让形状变化容易观察。
 D_FF = 16
 
+# 多头注意力的头数。这里保持很小，方便观察 shape。
+NUM_HEADS = 2
+# 每个 head 分到的维度。D_MODEL 会被拆成 NUM_HEADS 份：
+# D_MODEL = NUM_HEADS * HEAD_DIM。
+HEAD_DIM = D_MODEL // NUM_HEADS
+
+# 多头注意力要求 D_MODEL 可以被 head 数整除，否则无法均匀切分每个 head。
+assert D_MODEL % NUM_HEADS == 0
+
 
 # These are only semantic names for Tensor roles.
 # Python/PyTorch will not check these shapes automatically.
@@ -139,6 +148,44 @@ def assert_no_attention_to_future(name: str, attention_weights: AttentionWeights
         )
 
 
+def assert_multihead_attention_rows_sum_to_one(
+    name: str, attention_weights: Tensor
+) -> None:
+    # 多头版本的 attention_weights 形状是 [BATCH_SIZE, NUM_HEADS, SEQ_LEN, SEQ_LEN]。
+    # softmax 仍然在最后一维 key_position 上做，所以每个 batch、每个 head、每个 query 行都应该加总为 1。
+    row_sums = attention_weights.sum(dim=-1)
+    assert_shape(name + " row sums", row_sums, (BATCH_SIZE, NUM_HEADS, SEQ_LEN))
+    show_tensor(name + " row sums", row_sums)
+
+    expected_row_sums = torch.ones_like(row_sums)
+    if not torch.allclose(row_sums, expected_row_sums, atol=1e-6):
+        max_diff = (row_sums - expected_row_sums).abs().max().item()
+        raise AssertionError(
+            f"{name} rows do not sum to 1: max difference is {max_diff:.4e}"
+        )
+
+
+def assert_multihead_no_attention_to_future(name: str, attention_weights: Tensor) -> None:
+    # 多头版本同样要验证 causal mask：每个 head 都不能看未来 token。
+    # future_mask 仍是 [SEQ_LEN, SEQ_LEN]，会用于索引每个 head 的 query/key 矩阵。
+    future_mask = torch.triu(
+        torch.ones(SEQ_LEN, SEQ_LEN, dtype=torch.bool, device=attention_weights.device),
+        diagonal=1,
+    )
+
+    # attention_weights[:, :, future_mask] 会保留 batch 和 head 两维，
+    # 并从最后两维中取出所有未来位置的权重。
+    # 结果形状是 [BATCH_SIZE, NUM_HEADS, future_position_count]。
+    future_weights = attention_weights[:, :, future_mask]
+    expected_future_weights = torch.zeros_like(future_weights)
+
+    if not torch.allclose(future_weights, expected_future_weights, atol=1e-6):
+        max_future_weight = future_weights.abs().max().item()
+        raise AssertionError(
+            f"{name} should not attend to future tokens, max_future_weight={max_future_weight:.8f}"
+        )
+
+
 class SingleHeadDecoderBlock(nn.Module):
     """
     Package the hand-written Step 6 flow into one reusable decoder block.
@@ -206,6 +253,101 @@ class SingleHeadDecoderBlock(nn.Module):
         assert_shape("SingleHeadDecoderBlock output hidden", hidden_after_ffn, (BATCH_SIZE, SEQ_LEN, D_MODEL))
         return hidden_after_ffn
 
+class MultiHeadDecoderBlock(nn.Module):
+    """
+    Package the same decoder block as SingleHeadDecoderBlock, but split Q/K/V
+    into multiple heads before attention and concatenate them afterward.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+
+        self.attention_layer_norm = nn.LayerNorm(D_MODEL)
+        self.ffn_layer_norm = nn.LayerNorm(D_MODEL)
+
+        self.q_projection = nn.Linear(D_MODEL, D_MODEL, bias=False)
+        self.k_projection = nn.Linear(D_MODEL, D_MODEL, bias=False)
+        self.v_projection = nn.Linear(D_MODEL, D_MODEL, bias=False)
+
+        self.output_projection = nn.Linear(D_MODEL, D_MODEL, bias=False)
+
+        self.ffn_up_projection = nn.Linear(D_MODEL, D_FF)
+        self.ffn_down_projection = nn.Linear(D_FF, D_MODEL)
+    
+    def forward(self, hidden: HiddenStates) -> HiddenStates:
+        assert_shape("MultiHeadDecoderBlock input hidden", hidden, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+
+        attention_input = self.attention_layer_norm(hidden)
+        assert_shape("multihead attention_input", attention_input, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+
+        q = self.q_projection(attention_input)
+        k = self.k_projection(attention_input)
+        v = self.v_projection(attention_input)
+
+        assert_shape("q before split", q, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+
+        # 把最后一维 D_MODEL 拆成 NUM_HEADS 个 head，每个 head 的维度是 HEAD_DIM。
+        # reshape 后是 [BATCH_SIZE, SEQ_LEN, NUM_HEADS, HEAD_DIM]。
+        # transpose(1, 2) 把 head 维提前，得到注意力计算更方便的
+        # [BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM]。
+        q = q.reshape(BATCH_SIZE, SEQ_LEN, NUM_HEADS, HEAD_DIM).transpose(1, 2)
+        k = k.reshape(BATCH_SIZE, SEQ_LEN, NUM_HEADS, HEAD_DIM).transpose(1, 2)
+        v = v.reshape(BATCH_SIZE, SEQ_LEN, NUM_HEADS, HEAD_DIM).transpose(1, 2)
+
+        assert_shape("q after split", q, (BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM))
+        assert_shape("k after split", k, (BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM))
+        assert_shape("v after split", v, (BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM))
+
+        # 每个 head 独立计算自己的 scaled dot-product attention。
+        # 这里除以 sqrt(HEAD_DIM)，不是 sqrt(D_MODEL)，因为每个 head 只在 HEAD_DIM 维空间里做点积。
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(HEAD_DIM)
+        assert_shape(
+            "multihead scores",
+            scores,
+            (BATCH_SIZE, NUM_HEADS, SEQ_LEN, SEQ_LEN),
+        )
+
+        causal_mask = torch.triu(
+            torch.ones(SEQ_LEN, SEQ_LEN, dtype=torch.bool, device=scores.device),
+            diagonal=1,
+        )
+
+        masked_scores = scores.masked_fill(causal_mask, float("-inf"))
+        attention_weights = F.softmax(masked_scores, dim=-1)
+
+        assert_multihead_attention_rows_sum_to_one("multihead attention_weights", attention_weights)
+        assert_multihead_no_attention_to_future("multihead attention_weights", attention_weights)
+
+        attention_output = torch.matmul(attention_weights, v)
+
+        assert_shape(
+            "multihead attention_output",
+            attention_output,
+            (BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM),
+        )
+
+        # 把多个 head 拼回主干维度。
+        # 先 transpose 回 [BATCH_SIZE, SEQ_LEN, NUM_HEADS, HEAD_DIM]，
+        # 再 reshape 成 [BATCH_SIZE, SEQ_LEN, D_MODEL]。
+        merged_attention_output = attention_output.transpose(1, 2).reshape(
+            BATCH_SIZE, SEQ_LEN, D_MODEL
+        )
+        assert_shape("merged_attention_output", merged_attention_output, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+
+        # 多头 concat 之后通常还会接一个输出投影，把各 head 混合回统一表示空间。
+        attention_output = self.output_projection(merged_attention_output)
+        assert_shape("multihead projected attention_output", attention_output, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+
+        hidden_after_attention = hidden + attention_output
+
+        ffn_input = self.ffn_layer_norm(hidden_after_attention)
+        ffn_hidden = self.ffn_up_projection(ffn_input)
+        ffn_activated = F.relu(ffn_hidden)
+        ffn_output = self.ffn_down_projection(ffn_activated)
+
+        hidden_after_ffn = hidden_after_attention + ffn_output
+        assert_shape("MultiHeadDecoderBlock output hidden", hidden_after_ffn, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+        return hidden_after_ffn
 
 
 def main() -> None:
@@ -578,6 +720,35 @@ def main() -> None:
 
     print(f"block_loss: {block_loss.item():.4f}")
     print("ok: SingleHeadDecoderBlock is runnable")
+    print()
+
+    # Step 8B:
+    # 保留上面的 SingleHeadDecoderBlock 作为“单头封装版”学习痕迹。
+    # 这里额外跑 MultiHeadDecoderBlock，验证多头拆分、每个 head 独立 attention、
+    # concat 回 D_MODEL、再接 FFN 的完整路径。
+    print("Step 8B: hidden -> MultiHeadDecoderBlock -> multihead_logits -> multihead_loss")
+    print()
+
+    multihead_decoder_block = MultiHeadDecoderBlock()
+    multihead_output = multihead_decoder_block(hidden)
+
+    assert_shape("multihead_output", multihead_output, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+    show_tensor("multihead_output", multihead_output)
+
+    # 继续复用 output_projection，把多头 block 的输出投影成词表 logits。
+    # 多头 block 有自己随机初始化的参数，所以 multihead_loss 也不需要等于前面的 loss。
+    multihead_logits = output_projection(multihead_output)
+
+    assert_shape("multihead_logits", multihead_logits, (BATCH_SIZE, SEQ_LEN, VOCAB_SIZE))
+    show_tensor("multihead_logits", multihead_logits)
+
+    multihead_loss = F.cross_entropy(
+        multihead_logits.reshape(BATCH_SIZE * SEQ_LEN, VOCAB_SIZE),
+        targets.reshape(BATCH_SIZE * SEQ_LEN),
+    )
+
+    print(f"multihead_loss: {multihead_loss.item():.4f}")
+    print("ok: MultiHeadDecoderBlock is runnable")
     print()
 
     # TODO 8-9:
