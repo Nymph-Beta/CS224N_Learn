@@ -34,6 +34,10 @@ D_MODEL = 8
 # 当前 SEQ_LEN=4，只会用到位置 0, 1, 2, 3；MAX_SEQ_LEN=8 表示表里预留了 8 个位置。
 MAX_SEQ_LEN = 8
 
+# FFN 中间层维度。Transformer 的 FFN 通常会先把 d_model 升到更大的维度，
+# 做一次非线性变换后再降回 d_model。这里用 16 是为了让形状变化容易观察。
+D_FF = 16
+
 
 # These are only semantic names for Tensor roles.
 # Python/PyTorch will not check these shapes automatically.
@@ -329,6 +333,44 @@ def main() -> None:
     assert_shape("attention_output", attention_output, (BATCH_SIZE, SEQ_LEN, D_MODEL))
     show_tensor("attention_output", attention_output)
 
+    # FFN 的完整结构也可以写成 nn.Sequential。
+    # 这里先保留 Sequential 写法作为对照，但实际展开成三步，
+    # 方便分别观察升维、ReLU 激活、降维后的中间张量。
+    # feed_forward = nn.Sequential(
+    #     nn.Linear(D_MODEL, D_FF),
+    #     nn.ReLU(),
+    #     nn.Linear(D_FF, D_MODEL),
+    # )
+
+    # 第一层把每个位置的向量从 D_MODEL 升维到 D_FF。
+    # 第二层再从 D_FF 降回 D_MODEL，保证后续 output_projection 仍能接收 D_MODEL 维输入。
+    ffn_up_projection = nn.Linear(D_MODEL, D_FF)
+    ffn_down_projection = nn.Linear(D_FF, D_MODEL)
+
+    # 对 attention_output 的最后一维做线性升维。
+    # 输入形状是 [BATCH_SIZE, SEQ_LEN, D_MODEL]，
+    # 输出形状变成 [BATCH_SIZE, SEQ_LEN, D_FF]。
+    ffn_hidden = ffn_up_projection(attention_output)
+    assert_shape("ffn_hidden", ffn_hidden, (BATCH_SIZE, SEQ_LEN, D_FF))
+    show_tensor("ffn_hidden", ffn_hidden)
+
+    # ReLU 提供非线性能力：负数会被截断成 0，正数保持不变。
+    # 形状不会变化，仍然是 [BATCH_SIZE, SEQ_LEN, D_FF]。
+    ffn_activated = F.relu(ffn_hidden)
+    assert_shape("ffn_activated", ffn_activated, (BATCH_SIZE, SEQ_LEN, D_FF))
+    show_tensor("ffn_activated", ffn_activated)
+
+    # 把 FFN 中间表示降回 D_MODEL。
+    # 这样 FFN 可以作为 attention 后面的一个模块，而不会改变主干 hidden size。
+    ffn_output = ffn_down_projection(ffn_activated)
+    # 这里的 ffn_output 是 attention + FFN 后的输出，后续会被送到 output_projection 进行词表投影。
+
+    # 如果不用展开写法，上面三步可以由这个 Sequential 一次完成：
+    # ffn_output = feed_forward(attention_output)
+
+    assert_shape("ffn_output", ffn_output, (BATCH_SIZE, SEQ_LEN, D_MODEL))
+    show_tensor("ffn_output", ffn_output)
+
     assert_shape("hidden", hidden, (BATCH_SIZE, SEQ_LEN, D_MODEL))
     show_tensor("hidden", hidden)
 
@@ -345,9 +387,12 @@ def main() -> None:
     # Use output_projection to convert hidden states into logits.
     # 原来的最小语言模型直接把 hidden 投影到词表大小：
     # logits = output_projection(hidden)
-    # 现在中间多了一层自注意力，所以输出层读取的是 attention_output。
-    # 这样每个位置的预测会基于注意力混合后的上下文表示，而不是只基于原始 embedding。
-    logits = output_projection(attention_output)
+    # 后来改成先经过 causal self-attention，再直接把 attention_output 投影到词表：
+    # logits = output_projection(attention_output)
+
+    # 现在 attention_output 又经过了一层 FFN，所以输出层读取的是 ffn_output。
+    # 这样每个位置的预测会基于“注意力混合 + 非线性变换”后的表示。
+    logits = output_projection(ffn_output)
 
     assert_shape("logits", logits, (BATCH_SIZE, SEQ_LEN, VOCAB_SIZE))
     show_tensor("logits", logits)
