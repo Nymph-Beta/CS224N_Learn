@@ -1,4 +1,4 @@
-# Lecture Note 10: Self-Attention & Transformers
+# Lecture 8: Self-Attention and Transformers
 
 ### 视觉总览：Transformer 是把序列交互做成矩阵运算
 
