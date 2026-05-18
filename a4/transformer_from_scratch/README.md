@@ -1,4 +1,4 @@
-# a3_selfachieve
+# transformer_from_scratch
 
 按笔记顺序手写一个最小 Transformer。你自己写核心代码，我只提供路线、骨架、检查点和调试建议。
 
@@ -13,7 +13,7 @@ token ids -> token embedding -> logits -> loss
 运行：
 
 ```bash
-../.venv/bin/python main.py
+../../.venv/bin/python main.py
 ```
 
 当前固定规模：
