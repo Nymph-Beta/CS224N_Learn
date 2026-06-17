@@ -479,6 +479,64 @@ token i 只能看 j <= i
 
 整体匹配关系不是“第 $i$ 层 encoder 必须对应第 $i$ 层 decoder”，而是：encoder 先把源序列变成一组可查询的记忆 $H$，decoder 在每一层生成目标序列表示时，都可以通过 cross-attention 读取这组记忆。
 
+##### 视觉脚手架：原始 Transformer Encoder-Decoder 总架构
+
+这张图把前面拆开讲的组件重新合成原始 Transformer 的整体结构：上方 encoder 双向读取源序列并生成 memory，下方 decoder 先用 masked self-attention 读取目标前缀，再通过 cross-attention 读取 encoder memory。图中按经典论文画法把 **Add & Norm** 放在子层之后；现代工程实现常见的 pre-norm 只是把 LayerNorm 移到子层之前，主干模块关系不变。
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 52, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#334155", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
+flowchart TB
+    classDef embed fill:#d9ece8,stroke:#7aa39b,color:#123a35,stroke-width:1.25px;
+    classDef attention fill:#f2847b,stroke:#dc5b52,color:#32110f,stroke-width:1.25px;
+    classDef cross fill:#f4978e,stroke:#dc5b52,color:#32110f,stroke-width:1.25px;
+    classDef ffn fill:#5fcfcc,stroke:#2aa6a3,color:#052f2e,stroke-width:1.25px;
+    classDef norm fill:#fbf7c6,stroke:#d9cc62,color:#302b05,stroke-width:1.25px;
+    classDef io fill:#f4f7f4,stroke:#cbd5cb,color:#172033,stroke-width:1.25px;
+    classDef output fill:#ecefe7,stroke:#c7cec0,color:#111827,stroke-width:1.25px;
+
+    subgraph ENC["Encoder stack（源序列，重复 N 层）"]
+        direction TB
+        EI["Encoder Inputs"] --> EE["Embeddings"]
+        EE --> EP["Add Position<br/>Embeddings"]
+        EP --> ESA["Multi-Head<br/>Attention"]
+        EP -. residual .-> EAN1["Add & Norm"]
+        ESA --> EAN1
+        EAN1 --> EFF["Feed-Forward"]
+        EAN1 -. residual .-> EAN2["Add & Norm"]
+        EFF --> EAN2
+    end
+
+    EAN2 --> MEMORY["Encoder memory H<br/>作为 Decoder Cross-Attention 的 K / V"]
+
+    subgraph DEC["Decoder stack（目标序列，重复 N 层）"]
+        direction TB
+        DI["Decoder Inputs"] --> DE["Embeddings"]
+        DE --> DP["Add Position<br/>Embeddings"]
+        DP --> DSA["Masked Multi-Head<br/>Attention"]
+        DP -. residual .-> DAN1["Add & Norm"]
+        DSA --> DAN1
+        DAN1 --> DCA["Multi-Head<br/>Cross-Attention"]
+        DAN1 -. residual .-> DAN2["Add & Norm"]
+        DCA --> DAN2
+        DAN2 --> DFF["Feed-Forward"]
+        DAN2 -. residual .-> DAN3["Add & Norm"]
+        DFF --> DAN3
+    end
+
+    MEMORY -- "K / V" --> DCA
+    DAN3 --> LIN["Linear"]
+    LIN --> SM["Softmax"]
+    SM --> P["Probabilities"]
+
+    class EI,DI,MEMORY io;
+    class EE,EP,DE,DP embed;
+    class ESA,DSA attention;
+    class DCA cross;
+    class EFF,DFF ffn;
+    class EAN1,EAN2,DAN1,DAN2,DAN3 norm;
+    class LIN,SM,P output;
+```
+
 ```mermaid
 %%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 34, "rankSpacing": 42, "padding": 10}, "themeVariables": {"fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif", "primaryColor": "#eff6ff", "primaryTextColor": "#172033", "primaryBorderColor": "#3b82f6", "lineColor": "#64748b", "secondaryColor": "#f8fafc", "tertiaryColor": "#fff7ed"}}}%%
 flowchart LR
